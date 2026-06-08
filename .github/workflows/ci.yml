@@ -539,6 +539,8 @@ jobs:
         shell: bash
         env:
           UNICODE_STAGE: ${{ env.UNICODE_STAGE }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -555,6 +557,8 @@ jobs:
         shell: bash
         env:
           UNICODE_STAGE: ${{ env.UNICODE_STAGE }}
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           if [ "${{ runner.os }}" = "Windows" ]; then
