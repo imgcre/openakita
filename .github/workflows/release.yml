@@ -7,14 +7,14 @@ on:
         description: "Required guard for the temporary SignPath release-flow smoke test."
         required: true
         default: ""
-      source_run_id:
-        description: "Workflow run id that contains the unsigned Windows installer artifact."
+      source_release_tag:
+        description: "Temporary release tag that contains the unsigned Windows installer asset."
         required: true
-        default: "27742545923"
-      source_artifact_id:
-        description: "Unsigned Windows installer artifact id from source_run_id."
+        default: "codex-signpath-smoke-artifact"
+      source_asset_name:
+        description: "Unsigned Windows installer asset name."
         required: true
-        default: "7782659231"
+        default: "OpenAkitaDesktop_1.27.23_windows-x64.exe"
 
 jobs:
   signpath_release_flow_smoke:
@@ -34,28 +34,26 @@ jobs:
             exit 1
           }
 
-      - name: Download previous unsigned installer artifact
-        id: download_source_artifact
+      - name: Download unsigned installer smoke asset
+        id: download_source_asset
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
-          SOURCE_ARTIFACT_ID: ${{ inputs.source_artifact_id }}
+          SOURCE_RELEASE_TAG: ${{ inputs.source_release_tag }}
+          SOURCE_ASSET_NAME: ${{ inputs.source_asset_name }}
         run: |
           $ErrorActionPreference = "Stop"
-          $outDir = Join-Path $env:RUNNER_TEMP "signpath-source-artifact"
+          $outDir = Join-Path $env:RUNNER_TEMP "signpath-source-asset"
           New-Item -ItemType Directory -Path $outDir -Force | Out-Null
-          $zipPath = Join-Path $env:RUNNER_TEMP "unsigned-installer-artifact.zip"
+          gh release download $env:SOURCE_RELEASE_TAG `
+            --repo "${{ github.repository }}" `
+            --pattern $env:SOURCE_ASSET_NAME `
+            --dir $outDir `
+            --clobber
 
-          gh api `
-            "repos/${{ github.repository }}/actions/artifacts/$env:SOURCE_ARTIFACT_ID/zip" `
-            --method GET `
-            --output $zipPath
-
-          Expand-Archive -LiteralPath $zipPath -DestinationPath $outDir -Force
           $installers = @(Get-ChildItem -LiteralPath $outDir -Filter "*.exe" -File -Recurse)
           if ($installers.Count -ne 1) {
-            Write-Error "Expected exactly one exe in source artifact, found $($installers.Count)."
+            Write-Error "Expected exactly one exe in source release asset, found $($installers.Count)."
             $installers | ForEach-Object { Write-Host "  $($_.FullName)" }
             exit 1
           }
@@ -71,7 +69,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: unsigned-windows-installer-smoke
-          path: ${{ steps.download_source_artifact.outputs.installer }}
+          path: ${{ steps.download_source_asset.outputs.installer }}
           if-no-files-found: error
           retention-days: 1
           archive: false
