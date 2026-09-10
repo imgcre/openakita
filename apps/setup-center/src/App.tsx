@@ -4913,7 +4913,6 @@ function MainApp() {
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
           onManageServers={() => setShowServerManager(true)}
-          onViewResource={(type) => setView(type === "skill" ? "skills" : type === "mcp" ? "mcp" : "plugins")}
         />
       </div>
       </EnvFieldContext.Provider>
@@ -5485,7 +5484,6 @@ function MainApp() {
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
           onManageServers={() => setShowServerManager(true)}
-          onViewResource={(type) => setView(type === "skill" ? "skills" : type === "mcp" ? "mcp" : "plugins")}
         />
 
         {view === "wizard" ? (() => {

@@ -56,13 +56,11 @@ export function MarketplaceInstallDialog({
   apiBaseUrl,
   desktopVersion,
   onManageServers,
-  onViewResource,
   discoverTasks = false,
 }: {
   apiBaseUrl: string;
   desktopVersion: string;
   onManageServers?: () => void;
-  onViewResource?: (type: string) => void;
   discoverTasks?: boolean;
 }) {
   const { t } = useTranslation();
@@ -482,7 +480,6 @@ export function MarketplaceInstallDialog({
             await close();
             try { await openMarketplace(desktopVersion); } catch (error) { toast.error(t(marketplaceOpenErrorKey(error))); }
           }}>{t('marketplaceInstall.backToMarket')}</Button>}
-          {job?.status === 'installed' && selectedBase === apiBaseUrl.replace(/\/+$/, '') && onViewResource && <Button onClick={() => { void close(); onViewResource(job.resource_type); }}>{t('marketplaceInstall.viewResource')}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

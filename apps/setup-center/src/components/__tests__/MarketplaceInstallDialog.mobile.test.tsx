@@ -47,8 +47,8 @@ it('shows the target and permissions, persists the job and resumes after remount
   await screen.findByRole('button', { name: i18n.t('marketplaceInstall.background') });
   first.unmount();
   status = 'installed';
-  render(<MarketplaceInstallDialog {...props} onViewResource={vi.fn()} />);
-  await screen.findByRole('button', { name: i18n.t('marketplaceInstall.viewResource') });
+  render(<MarketplaceInstallDialog {...props} />);
+  await screen.findByRole('button', { name: i18n.t('marketplaceInstall.pluginSetup.done') });
   expect(calls.filter(url => url.endsWith('/prepare'))).toHaveLength(1);
   expect(calls.filter(url => url.endsWith('/confirm'))).toHaveLength(1);
 });
