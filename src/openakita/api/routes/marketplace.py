@@ -32,7 +32,7 @@ def _error(exc: MarketplaceInstallError) -> HTTPException:
 @router.post("/installs/prepare")
 async def prepare_install(body: PrepareBody, request: Request):
     try:
-        return {"data": await _manager(request).prepare(body.token, body.endpoint)}
+        return {"data": await _manager(request).prepare(body.token, body.endpoint, request)}
     except MarketplaceInstallError as exc:
         raise _error(exc) from exc
 

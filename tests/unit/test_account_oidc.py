@@ -8,6 +8,7 @@ from openakita.account.oidc import (
     CALLBACK_URI,
     CLIENT_ID,
     DEFAULT_ACCOUNT_BASE_URL,
+    AccountOIDCError,
     AccountOIDCManager,
     KeyringTokenStore,
     LoginAttempt,
@@ -21,6 +22,41 @@ from openakita.account.oidc import (
 def test_pkce_challenge_rfc7636_vector() -> None:
     verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
     assert pkce_challenge(verifier) == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+
+async def test_loopback_callback_rejects_wrong_state_without_consuming_attempt():
+    manager = AccountOIDCManager(store=AsyncMock(), token_store=AsyncMock())
+    manager._complete = AsyncMock()
+    attempt = LoginAttempt("attempt", "expected-state", "verifier", "https://account.example")
+    with pytest.raises(AccountOIDCError, match="invalid OAuth state"):
+        await manager.complete_callback(attempt, state="wrong", code="code")
+    assert attempt.status == "pending"
+    assert await manager.complete_callback(attempt, state="expected-state", code="code")
+    manager._complete.assert_awaited_once_with(
+        code="code", verifier="verifier", redirect_uri=CALLBACK_URI
+    )
+
+
+async def test_loopback_callback_is_single_use_even_with_concurrent_requests():
+    manager = AccountOIDCManager(store=AsyncMock(), token_store=AsyncMock())
+    manager._complete = AsyncMock()
+    attempt = LoginAttempt("attempt", "state", "verifier", "https://account.example")
+    results = await asyncio.gather(
+        *[manager.complete_callback(attempt, state="state", code="code") for _ in range(2)],
+        return_exceptions=True,
+    )
+    assert sum(result is True for result in results) == 1
+    assert any(isinstance(result, AccountOIDCError) for result in results)
+    manager._complete.assert_awaited_once()
+
+
+async def test_loopback_denial_does_not_exchange_tokens():
+    manager = AccountOIDCManager(store=AsyncMock(), token_store=AsyncMock())
+    manager._complete = AsyncMock()
+    attempt = LoginAttempt("attempt", "state", "verifier", "https://account.example")
+    assert not await manager.complete_callback(attempt, state="state", error="access_denied")
+    assert attempt.status == "failed" and attempt.error == "account_authorization_denied"
+    manager._complete.assert_not_awaited()
 
 
 def test_loopback_contract_constants() -> None:

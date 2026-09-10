@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 ACCOUNT_MODES = {"openakita", "custom", "disabled"}
-DEFAULT_ACCOUNT_BASE_URL = "https://account.fzstack.com"
+DEFAULT_ACCOUNT_BASE_URL = "https://account.openakita.cn"
 DEFAULT_ACCOUNT_CLIENT_ID = "openakita-desktop"
 DEFAULT_CREDENTIAL_USERNAME = "openakita-desktop-refresh-token"
 

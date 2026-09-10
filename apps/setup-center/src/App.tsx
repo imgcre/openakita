@@ -4904,6 +4904,8 @@ function MainApp() {
         <MarketplaceInstallDialog
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
+          onManageServers={() => setShowServerManager(true)}
+          onViewResource={(type) => setView(type === "skill" ? "skills" : type === "mcp" ? "mcp" : "plugins")}
         />
       </div>
       </EnvFieldContext.Provider>
@@ -5040,6 +5042,7 @@ function MainApp() {
         view={view}
         onViewChange={(v) => navigateToView(v)}
         mobileOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
         configMode={configMode}
         onEnterConfig={() => {
           if (view !== "wizard" && view !== "identity") lastAppViewRef.current = view;
@@ -5471,6 +5474,8 @@ function MainApp() {
         <MarketplaceInstallDialog
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
+          onManageServers={() => setShowServerManager(true)}
+          onViewResource={(type) => setView(type === "skill" ? "skills" : type === "mcp" ? "mcp" : "plugins")}
         />
 
         {view === "wizard" ? (() => {

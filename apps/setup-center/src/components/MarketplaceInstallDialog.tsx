@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { getCurrentDeepLinks, IS_TAURI, onDeepLinkOpen, openExternalUrl } from "../platform";
+import { getCurrentDeepLinks, IS_TAURI, IS_CAPACITOR, onDeepLinkOpen, openExternalUrl } from "../platform";
 import {
   buildMarketplaceContextUrlFromDeepLink,
   hasMarketplaceClientVersion,
   marketplaceDeepLinkAction,
 } from "../marketplace/navigation";
+
+import { acceptMobileInstall, installRequest, pendingInstall, saveInstall, openMarketplace, marketplaceOpenErrorKey, type PendingInstall } from '../marketplace/mobile';
 
 type InstallJob = {
   id: string;
@@ -58,9 +60,13 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 export function MarketplaceInstallDialog({
   apiBaseUrl,
   desktopVersion,
+  onManageServers,
+  onViewResource,
 }: {
   apiBaseUrl: string;
   desktopVersion: string;
+  onManageServers?: () => void;
+  onViewResource?: (type: string) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -69,6 +75,60 @@ export function MarketplaceInstallDialog({
   const [errorCode, setErrorCode] = useState("");
   const recentlyHandled = useRef(new Map<string, number>());
   const pendingOpenLinks = useRef(new Set<string>());
+  const mobile = useRef<PendingInstall | undefined>(undefined);
+  const loadingMobile = useRef(false);
+  const mounted = useRef(true);
+  const [acting, setActing] = useState(false);
+  const [accountLabel, setAccountLabel] = useState('');
+  const requestJob = useCallback(<T,>(path: string, init?: RequestInit): Promise<T> => {
+    if (IS_CAPACITOR) {
+      if (!mobile.current) throw new Error('marketplace_context_expired');
+      return installRequest(mobile.current.target)<T>(path, init);
+    }
+    return requestJson<T>(apiBaseUrl + path, init);
+  }, [apiBaseUrl]);
+
+  const restoreMobile = useCallback(async (pending: PendingInstall) => {
+    if (pending.dismissed || loadingMobile.current) return;
+    loadingMobile.current = true;
+    mobile.current = pending;
+    setOpen(true); setLoading(true); setErrorCode(''); setJob(null); setAccountLabel('');
+    try {
+      const request = installRequest(pending.target);
+      const prepared = pending.jobId
+        ? await request<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(pending.jobId)}`)
+        : await request<InstallJob>('/api/marketplace/installs/prepare', {
+          method: 'POST', body: JSON.stringify({ token: pending.token, endpoint: pending.endpoint }),
+        });
+      const saved = { ...pending, jobId: prepared.id, token: undefined };
+      saveInstall(saved); mobile.current = saved;
+      if (mounted.current) setJob(prepared);
+    } catch (error) {
+      if (mounted.current) setErrorCode(error instanceof Error ? error.message : 'marketplace_connection_failed');
+      if (error instanceof Error && error.message === 'marketplace_account_mismatch') {
+        try {
+          const { readNativeAccountStatus } = await import('../platform/nativeAccountAuth');
+          const account = await readNativeAccountStatus(pending.target.base);
+          if (mounted.current) setAccountLabel(account.profile?.email || account.profile?.name || '');
+        } catch { /* The original authorization error remains visible. */ }
+      }
+    } finally {
+      loadingMobile.current = false;
+      if (mounted.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    if (!IS_CAPACITOR) return () => { mounted.current = false; };
+    const resume = () => {
+      const pending = pendingInstall();
+      if (pending && !pending.dismissed) void restoreMobile(pending);
+    };
+    resume();
+    window.addEventListener('openakita-marketplace-resume', resume);
+    return () => { mounted.current = false; window.removeEventListener('openakita-marketplace-resume', resume); };
+  }, [restoreMobile]);
 
   const friendlyError = useCallback((code: string) => t(`marketplaceInstall.errors.${code}`, {
     defaultValue: t("marketplaceInstall.errors.marketplace_install_failed"),
@@ -109,6 +169,16 @@ export function MarketplaceInstallDialog({
   }, [apiBaseUrl]);
 
   const handleDeepLink = useCallback((raw: string) => {
+    if (IS_CAPACITOR) {
+      try {
+        const pending = acceptMobileInstall(raw);
+        if (pending && !pending.dismissed) {
+          void import('@capacitor/browser').then(({ Browser }) => Browser.close()).catch(() => {});
+          void restoreMobile(pending);
+        }
+      } catch (error) { toast.error(friendlyError(error instanceof Error ? error.message : 'marketplace_instruction_invalid')); }
+      return;
+    }
     const action = marketplaceDeepLinkAction(raw);
     if (action === "open" && !hasMarketplaceClientVersion(desktopVersion)) {
       pendingOpenLinks.current.add(raw);
@@ -139,16 +209,16 @@ export function MarketplaceInstallDialog({
     void openExternalUrl(target).catch(() => {
       toast.error(t("marketplaceInstall.openFailed"));
     });
-  }, [desktopVersion, prepare, t]);
+  }, [desktopVersion, prepare, restoreMobile, friendlyError, t]);
 
   useEffect(() => {
-    if (!IS_TAURI) return;
+    if (!IS_TAURI && !IS_CAPACITOR) return;
     let disposed = false;
     let cleanup = () => {};
-    void getCurrentDeepLinks().then((urls) => urls.forEach(handleDeepLink));
+    void getCurrentDeepLinks().then((urls) => { if (!disposed) urls.forEach(handleDeepLink); }).catch(() => {});
     void onDeepLinkOpen((urls) => urls.forEach(handleDeepLink)).then((unlisten) => {
       if (disposed) unlisten(); else cleanup = unlisten;
-    });
+    }).catch(() => {});
     return () => { disposed = true; cleanup(); };
   }, [handleDeepLink]);
 
@@ -165,54 +235,62 @@ export function MarketplaceInstallDialog({
     let timer = 0;
     const poll = async () => {
       try {
-        const next = await requestJson<InstallJob>(`${apiBaseUrl}/api/marketplace/installs/${encodeURIComponent(job.id)}`);
+        const next = await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(job.id)}`);
         if (!cancelled) setJob(next);
-      } catch {
-        if (!cancelled) setErrorCode("marketplace_connection_failed");
+      } catch (error) {
+        if (!cancelled) setErrorCode(error instanceof Error ? error.message : "marketplace_connection_failed");
       }
       if (!cancelled) timer = window.setTimeout(poll, 700);
     };
     timer = window.setTimeout(poll, 500);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [apiBaseUrl, job, open]);
+  }, [requestJob, job, open]);
 
   async function confirm() {
-    if (!job) return;
+    if (!job || acting) return;
+    setActing(true);
     setErrorCode("");
     try {
-      setJob(await requestJson<InstallJob>(`${apiBaseUrl}/api/marketplace/installs/${encodeURIComponent(job.id)}/confirm`, { method: "POST" }));
+      setJob(await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(job.id)}/confirm`, { method: "POST" }));
     } catch (error) {
       setErrorCode(error instanceof Error ? error.message : "marketplace_install_failed");
-    }
+    } finally { setActing(false); }
   }
 
   const active = !!job && ["downloading", "verifying", "installing"].includes(job.status);
 
   const close = useCallback(async () => {
-    if (active) return;
+    if (loading || acting || (active && !IS_CAPACITOR)) return;
     const current = job;
     setOpen(false);
+    if (active) return;
+    if (mobile.current) saveInstall({ ...mobile.current, dismissed: true });
     if (current?.status !== "ready") return;
     try {
-      await requestJson<InstallJob>(`${apiBaseUrl}/api/marketplace/installs/${encodeURIComponent(current.id)}/cancel`, { method: "POST" });
+      await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(current.id)}/cancel`, { method: "POST" });
     } catch {
       // The local service persists the pending cancellation and retries delivery.
     }
-  }, [active, apiBaseUrl, job]);
+  }, [active, requestJob, job, loading, acting]);
 
   const statusLabel = job ? t(`marketplaceInstall.status.${job.status}`) : "";
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) void close(); }}>
-      <DialogContent className="sm:max-w-[520px]" showCloseButton={!active}>
+      <DialogContent overlayClassName="z-[1100]" className="z-[1100] sm:max-w-[520px] max-h-[85dvh] overflow-y-auto" showCloseButton={(!active || IS_CAPACITOR) && !loading && !acting}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {job?.status === "installed" ? <CheckCircle2 className="text-emerald-500" size={22} /> : <PackageCheck className="text-blue-600" size={22} />}
-            {t("marketplaceInstall.title")}
+          <DialogTitle className="flex items-start gap-2 pr-6 text-left">
+            {job?.status === "installed" ? <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-500" size={22} /> : <PackageCheck className="mt-0.5 shrink-0 text-blue-600" size={22} />}
+            <span className="min-w-0 break-words">{t("marketplaceInstall.title")}</span>
           </DialogTitle>
           <DialogDescription>{job ? `${job.resource_name} · v${job.version}` : t("marketplaceInstall.connecting")}</DialogDescription>
         </DialogHeader>
 
+        {IS_CAPACITOR && mobile.current && <div className="rounded-md border p-3 text-sm break-all">
+          <div className="text-muted-foreground">{t('marketplaceInstall.target')}</div>
+          <strong>{mobile.current.target.name}</strong><div>{mobile.current.target.base}</div>
+          {accountLabel && <div>{accountLabel}</div>}
+        </div>}
         {loading && <div className="py-8 text-center text-sm text-muted-foreground"><span className="spinner mx-auto mb-3 block" />{t("marketplaceInstall.connecting")}</div>}
 
         {errorCode && <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"><AlertCircle className="mt-0.5 shrink-0" size={18} /><span>{friendlyError(errorCode)}</span></div>}
@@ -234,8 +312,28 @@ export function MarketplaceInstallDialog({
         </>}
 
         <DialogFooter>
-          {!active && <Button variant="outline" onClick={() => void close()}>{job?.status === "installed" ? t("common.done", "完成") : t("common.cancel")}</Button>}
-          {job?.status === "ready" && <Button onClick={confirm}><Download size={16} />{t("marketplaceInstall.install")}</Button>}
+          {IS_CAPACITOR && errorCode === 'marketplace_account_required' && !acting && <Button onClick={async () => {
+            const pending = mobile.current;
+            if (!pending) return;
+            setActing(true);
+            try {
+              const { runNativeAccountLogin, readNativeAccountStatus } = await import('../platform/nativeAccountAuth');
+              const { dispatchAccountStatusChanged } = await import('../utils/accountStatusEvents');
+              await runNativeAccountLogin(pending.target.base);
+              dispatchAccountStatusChanged(await readNativeAccountStatus(pending.target.base));
+              await restoreMobile(pending);
+            } catch { setErrorCode('marketplace_account_required'); }
+            finally { setActing(false); }
+          }}>{t('marketplaceInstall.loginAccount')}</Button>}
+          {(!active || IS_CAPACITOR) && !loading && !acting && <Button variant="outline" onClick={() => void close()}>{active ? t("marketplaceInstall.background") : job?.status === "installed" ? t("common.done", "完成") : t("common.cancel")}</Button>}
+          {job?.status === "ready" && <Button onClick={confirm} disabled={acting || loading || errorCode === "marketplace_target_changed"}><Download size={16} />{t("marketplaceInstall.install")}</Button>}
+          {IS_CAPACITOR && errorCode && !loading && <Button variant="outline" onClick={() => { if (mobile.current) void restoreMobile(mobile.current); }}>{t('common.retry')}</Button>}
+          {IS_CAPACITOR && ['marketplace_target_changed', 'marketplace_server_login_required'].includes(errorCode) && <Button onClick={onManageServers}>{t('marketplaceInstall.manageServers')}</Button>}
+          {IS_CAPACITOR && ['marketplace_account_required', 'marketplace_account_mismatch', 'marketplace_instruction_unavailable', 'marketplace_install_not_found'].includes(errorCode) && <Button variant="outline" onClick={async () => {
+            await close();
+            try { await openMarketplace(desktopVersion); } catch (error) { toast.error(t(marketplaceOpenErrorKey(error))); }
+          }}>{t('marketplaceInstall.backToMarket')}</Button>}
+          {job?.status === 'installed' && onViewResource && <Button onClick={() => { void close(); onViewResource(job.resource_type); }}>{t('marketplaceInstall.viewResource')}</Button>}
         </DialogFooter>
       </DialogContent>
     </Dialog>

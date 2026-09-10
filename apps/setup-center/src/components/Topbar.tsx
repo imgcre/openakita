@@ -19,7 +19,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { LogOut, Square, ClipboardCopy, Compass, Store } from "lucide-react";
 import { toast } from "sonner";
 import { openExternalUrl } from "../platform";
-import { buildMarketplaceContextUrl } from "../marketplace/navigation";
+import { marketplaceOpenErrorKey, openMarketplace as launchMarketplace } from "../marketplace/mobile";
 import { copyToClipboard } from "../utils/clipboard";
 import { RemoteAccessDialog } from "./RemoteAccessDialog";
 import { InboxBadge } from "./InboxBadge";
@@ -85,9 +85,9 @@ export function Topbar({
 
   const openMarketplace = async () => {
     try {
-      await openExternalUrl(buildMarketplaceContextUrl(desktopVersion));
-    } catch {
-      toast.error(t("topbar.openMarketplaceFailed"));
+      await launchMarketplace(desktopVersion);
+    } catch (error) {
+      toast.error(t(marketplaceOpenErrorKey(error)));
     }
   };
 

@@ -1,4 +1,4 @@
-"""Authorization Code + PKCE integration with OpenAkita Account."""
+"""PKCE and RFC 8628 device authorization with OpenAkita Account."""
 
 from __future__ import annotations
 
@@ -29,6 +29,14 @@ CLIENT_ID = DEFAULT_ACCOUNT_CLIENT_ID
 CALLBACK_HOST = "127.0.0.1"
 CALLBACK_PORT = 1455
 CALLBACK_URI = f"http://{CALLBACK_HOST}:{CALLBACK_PORT}/auth/callback"
+NATIVE_CALLBACK_URIS = frozenset(
+    {
+        "https://account.openakita.cn/oauth/mobile/callback",
+        "com.openakita.mobile:/oauth/callback",
+    }
+)
+DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+LOGIN_TTL = 180
 
 
 class AccountOIDCError(Exception):
@@ -99,6 +107,14 @@ class LoginAttempt:
     state: str
     verifier: str
     authorization_url: str
+    redirect_uri: str = CALLBACK_URI
+    flow: str = "loopback"
+    user_code: str = ""
+    verification_uri: str = ""
+    device_code: str = field(default="", repr=False)
+    expires_in: int = LOGIN_TTL
+    poll_interval: float = 5
+    next_poll_at: float = 0
     status: str = "pending"
     error: str | None = None
     created_at: float = field(default_factory=time.time)
@@ -239,21 +255,38 @@ class AccountOIDCManager:
             raise ValueError("account client ID must not be empty")
         self._attempts: dict[str, LoginAttempt] = {}
         self._server: asyncio.Server | None = None
+        self._listener_attempt: LoginAttempt | None = None
+        self._login_lock = asyncio.Lock()
         self._access_token: str | None = None
         self._session_id: str | None = None
         self._account_user_id: str | None = None
 
-    async def start(self) -> LoginAttempt:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+    async def start(
+        self, *, flow: str = "loopback", redirect_uri: str | None = None
+    ) -> LoginAttempt:
+        if flow not in {"loopback", "device", "native"}:
+            raise AccountOIDCError("unsupported login flow")
+        if flow == "native" and redirect_uri not in NATIVE_CALLBACK_URIS:
+            raise AccountOIDCError("invalid native redirect URI")
+        self._attempts = {
+            key: value
+            for key, value in self._attempts.items()
+            if time.time() - value.created_at < value.expires_in + 60
+        }
+        if len(self._attempts) >= 32:
+            raise AccountOIDCError("too many login attempts")
+        if flow == "device":
+            return await self._start_device()
+        if flow == "loopback" and self._listener_attempt is not None:
+            await self.cancel(self._listener_attempt.attempt_id)
+        redirect_uri = redirect_uri if flow == "native" else CALLBACK_URI
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         attempt_id = secrets.token_urlsafe(18)
         query = urlencode(
             {
                 "client_id": self._client_id,
-                "redirect_uri": CALLBACK_URI,
+                "redirect_uri": redirect_uri,
                 "response_type": "code",
                 "scope": "openid profile email offline_access entitlements organizations",
                 "state": state,
@@ -266,21 +299,252 @@ class AccountOIDCManager:
             state=state,
             verifier=verifier,
             authorization_url=f"{self._base_url}/oauth/authorize?{query}",
+            redirect_uri=redirect_uri,
+            flow=flow,
+            expires_in=600 if flow == "native" else LOGIN_TTL,
         )
         self._attempts[attempt_id] = attempt
-        self._server = await asyncio.start_server(
-            lambda reader, writer: self._callback(reader, writer, attempt),
-            CALLBACK_HOST,
-            CALLBACK_PORT,
+        if flow == "native":
+            asyncio.get_running_loop().call_later(attempt.expires_in, self._expire_attempt, attempt)
+            return attempt
+        try:
+            self._server = await asyncio.start_server(
+                lambda reader, writer: self._callback(reader, writer, attempt),
+                CALLBACK_HOST,
+                CALLBACK_PORT,
+            )
+        except OSError:
+            self._attempts.pop(attempt_id, None)
+            raise
+        self._listener_attempt = attempt
+        asyncio.get_running_loop().call_later(LOGIN_TTL, self._expire_attempt, attempt)
+        return attempt
+
+    async def _start_device(self) -> LoginAttempt:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base_url}/oauth/device_authorization",
+                    data={
+                        "client_id": self._client_id,
+                        "scope": "openid profile email offline_access entitlements organizations",
+                    },
+                )
+            if response.status_code in {404, 405, 501}:
+                raise AccountOIDCError("account_device_not_supported")
+            if response.status_code != 200:
+                raise AccountOIDCError("account_device_start_failed")
+            payload = response.json()
+            device_code = payload["device_code"]
+            user_code = payload["user_code"]
+            verification_uri = payload["verification_uri"]
+            authorization_url = payload.get("verification_uri_complete") or verification_uri
+            expires_in = payload["expires_in"]
+            interval = payload.get("interval", 5)
+            if (
+                not all(
+                    isinstance(value, str) and 0 < len(value) <= 8192
+                    for value in (device_code, user_code, verification_uri, authorization_url)
+                )
+                or type(expires_in) is not int
+                or not 0 < expires_in <= 3600
+                or type(interval) is not int
+                or not 0 < interval <= expires_in
+            ):
+                raise ValueError("invalid device authorization response")
+            for uri in (verification_uri, authorization_url):
+                parsed = urlsplit(uri)
+                if (
+                    parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname
+                    or parsed.username
+                    or parsed.password
+                ):
+                    raise ValueError("invalid verification URI")
+        except AccountOIDCError:
+            raise
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            raise AccountOIDCError("account_device_start_failed") from exc
+        attempt = LoginAttempt(
+            attempt_id=secrets.token_urlsafe(18),
+            state="",
+            verifier="",
+            authorization_url=authorization_url,
+            flow="device",
+            device_code=device_code,
+            user_code=user_code,
+            verification_uri=verification_uri,
+            expires_in=expires_in,
+            poll_interval=interval,
+            next_poll_at=time.monotonic() + interval,
         )
-        asyncio.create_task(self._expire_attempt(attempt))
+        self._attempts[attempt.attempt_id] = attempt
+        asyncio.get_running_loop().call_later(expires_in, self._expire_attempt, attempt)
         return attempt
 
     async def attempt_status(self, attempt_id: str) -> dict:
         attempt = self._attempts.get(attempt_id)
         if attempt is None:
             raise AccountOIDCError("unknown login attempt")
+        if attempt.flow == "device" and attempt.status == "pending":
+            await self._poll_device(attempt)
         return {"status": attempt.status, "error": attempt.error}
+
+    async def _poll_device(self, attempt: LoginAttempt) -> None:
+        async with self._login_lock:
+            if attempt.status != "pending":
+                return
+            if time.time() - attempt.created_at >= attempt.expires_in:
+                self._expire_attempt(attempt)
+                return
+            if time.monotonic() < attempt.next_poll_at:
+                return
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    response = await client.post(
+                        f"{self._base_url}/oauth/token",
+                        data={
+                            "grant_type": DEVICE_GRANT_TYPE,
+                            "client_id": self._client_id,
+                            "device_code": attempt.device_code,
+                        },
+                    )
+                if response.status_code == 429 or response.status_code >= 500:
+                    attempt.poll_interval *= 2
+                    return
+                if attempt.status != "pending":
+                    return
+                payload = response.json()
+                if response.status_code != 200:
+                    error = payload.get("error")
+                    if error == "authorization_pending":
+                        return
+                    if error == "slow_down":
+                        attempt.poll_interval += 5
+                        return
+                    attempt.status = "expired" if error == "expired_token" else "failed"
+                    attempt.error = (
+                        "account_authorization_denied"
+                        if error == "access_denied"
+                        else "account_login_expired"
+                        if error == "expired_token"
+                        else "account_token_exchange_failed"
+                    )
+                    return
+                # Once tokens have been issued, do not poll the one-time grant
+                # again even if userinfo or local credential persistence fails.
+                attempt.status = "exchanging"
+                await self._accept_tokens(payload)
+                attempt.status = "complete"
+            except asyncio.CancelledError:
+                # A disconnected request may have consumed the one-time grant.
+                # Never leave an attempt stuck in exchanging or retry it blindly.
+                attempt.status = "failed"
+                attempt.error = "account_token_exchange_failed"
+                raise
+            except httpx.HTTPError:
+                if attempt.status == "exchanging":
+                    attempt.status = "failed"
+                    attempt.error = "account_token_exchange_failed"
+                else:
+                    attempt.poll_interval *= 2
+            except Exception as exc:
+                logger.warning("Device login failed: %s", type(exc).__name__)
+                attempt.status = "failed"
+                attempt.error = "account_token_exchange_failed"
+            finally:
+                attempt.next_poll_at = time.monotonic() + attempt.poll_interval
+                if attempt.status != "pending":
+                    attempt.device_code = ""
+
+    async def complete_callback(
+        self,
+        attempt: LoginAttempt,
+        *,
+        state: str,
+        code: str = "",
+        error: str = "",
+    ) -> bool:
+        async with self._login_lock:
+            if not secrets.compare_digest(attempt.state.encode(), state.encode()):
+                raise AccountOIDCError("invalid OAuth state")
+            if attempt.flow == "native" and attempt.status == "complete":
+                return True
+            if attempt.status != "pending":
+                raise AccountOIDCError("login attempt is no longer pending")
+            if time.time() - attempt.created_at >= attempt.expires_in:
+                attempt.status = "expired"
+                raise AccountOIDCError("account_login_expired")
+            if error:
+                attempt.status = "failed"
+                attempt.error = "account_authorization_denied"
+                return False
+            if not code:
+                raise AccountOIDCError("missing OAuth code")
+            attempt.status = "exchanging"
+            try:
+                await self._complete(
+                    code=code, verifier=attempt.verifier, redirect_uri=attempt.redirect_uri
+                )
+            except asyncio.CancelledError:
+                attempt.status = "failed"
+                attempt.error = "account_token_exchange_failed"
+                raise
+            except Exception as exc:
+                # HTTP exceptions can include token request URLs. Do not expose
+                # provider payloads, authorization codes or tokens in logs/UI.
+                logger.warning(
+                    "OpenAkita Account login failed: %s",
+                    str(exc) if isinstance(exc, AccountOIDCError) else type(exc).__name__,
+                )
+                attempt.status = "failed"
+                attempt.error = "account_token_exchange_failed"
+                return False
+            finally:
+                attempt.verifier = ""
+            attempt.status = "complete"
+            return True
+
+    async def complete_native_callback(
+        self, attempt_id: str, *, state: str, code: str = "", error: str = ""
+    ) -> dict:
+        attempt = self._attempts.get(attempt_id)
+        if attempt is None or attempt.flow != "native":
+            raise AccountOIDCError("unknown native login attempt")
+        # A retry after a lost response must not redeem the one-time code again.
+        if not secrets.compare_digest(attempt.state.encode(), state.encode()):
+            raise AccountOIDCError("invalid OAuth state")
+        if code and error:
+            raise AccountOIDCError("ambiguous OAuth response")
+        if attempt.status == "complete":
+            return {"status": "complete", "error": None}
+        if attempt.status in {"failed", "expired", "cancelled"}:
+            return {"status": attempt.status, "error": attempt.error or "account_login_expired"}
+        try:
+            await self.complete_callback(attempt, state=state, code=code, error=error)
+        except AccountOIDCError:
+            if attempt.status not in {"expired", "cancelled"}:
+                raise
+            return {"status": attempt.status, "error": "account_login_expired"}
+        return {"status": attempt.status, "error": attempt.error}
+
+    async def _close_listener(self, attempt: LoginAttempt) -> None:
+        if self._listener_attempt is attempt and self._server is not None:
+            server = self._server
+            self._server = None
+            self._listener_attempt = None
+            server.close()
+            await server.wait_closed()
+
+    async def cancel(self, attempt_id: str) -> None:
+        attempt = self._attempts.get(attempt_id)
+        if attempt is None:
+            raise AccountOIDCError("unknown login attempt")
+        async with self._login_lock:
+            if attempt.status == "pending":
+                attempt.status = "cancelled"
+                attempt.device_code = ""
+            await self._close_listener(attempt)
 
     async def snapshot(self) -> dict:
         # The identity snapshot is intentionally retained for offline cache and
@@ -289,6 +553,37 @@ class AccountOIDCManager:
         if not await self._tokens.load_refresh_token():
             return {"status": "signed_out"}
         return (await self._store.snapshot()) or {"status": "signed_out"}
+
+    async def marketplace_install_proof(self, token: str, device_id: str) -> str:
+        """Keep account credentials on the instance; export only a scoped proof."""
+        if self._client_id != "openakita-desktop":
+            raise AccountOIDCError("marketplace_account_unsupported")
+        async with self._login_lock:
+            refresh = await self._tokens.load_refresh_token()
+            if not refresh:
+                raise AccountOIDCError("marketplace_account_required")
+            try:
+                async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+                    response = await client.post(
+                        f"{self._base_url}/oauth/desktop-install-proof",
+                        json={
+                            "client_id": self._client_id,
+                            "refresh_token": refresh,
+                            "target_client_id": "marketplace",
+                            "installation_token": token,
+                            "device_id": device_id,
+                        },
+                    )
+            except httpx.HTTPError as exc:
+                raise AccountOIDCError("marketplace_identity_unavailable") from exc
+            if response.status_code in (400, 401, 403):
+                raise AccountOIDCError("marketplace_account_required")
+            if response.status_code != 200:
+                raise AccountOIDCError("marketplace_identity_unavailable")
+            proof = response.json().get("proof")
+            if not isinstance(proof, str) or not proof:
+                raise AccountOIDCError("marketplace_identity_unavailable")
+            return proof
 
     async def refresh_entitlements(self) -> dict:
         access_token = await self._valid_access_token()
@@ -312,6 +607,8 @@ class AccountOIDCManager:
         return payload
 
     async def logout(self) -> str:
+        for attempt_id in list(self._attempts):
+            await self.cancel(attempt_id)
         if self._session_id:
             await self._store.revoke_session(self._session_id)
         await self._tokens.clear()
@@ -347,19 +644,20 @@ class AccountOIDCManager:
                 if separator and name.strip().lower() == "accept-language":
                     accept_language = value.strip()
             language = _preferred_callback_language(accept_language)
-            query = parse_qs(urlsplit(parts[1]).query)
+            target = urlsplit(parts[1])
+            if target.path != "/auth/callback":
+                raise AccountOIDCError("invalid loopback callback path")
+            query = parse_qs(target.query, max_num_fields=20)
+            if any(len(query.get(key, [])) > 1 for key in ("state", "code", "error")):
+                raise AccountOIDCError("duplicate OAuth parameters")
             state = query.get("state", [""])[0]
             code = query.get("code", [""])[0]
-            if not secrets.compare_digest(state, attempt.state) or not code:
-                raise AccountOIDCError("invalid OAuth state or code")
-            await self._complete(code=code, verifier=attempt.verifier)
-            attempt.status = "complete"
-            body = _callback_page_html(success=True, language=language)
-            status = b"200 OK"
-        except Exception as exc:
-            logger.warning("OpenAkita Account login failed: %s", exc)
-            attempt.status = "failed"
-            attempt.error = str(exc)
+            success = await self.complete_callback(
+                attempt, state=state, code=code, error=query.get("error", [""])[0]
+            )
+            body = _callback_page_html(success=success, language=language)
+            status = b"200 OK" if success else b"400 Bad Request"
+        except Exception:
             body = _callback_page_html(success=False, language=language)
             status = b"400 Bad Request"
         writer.write(
@@ -376,12 +674,16 @@ class AccountOIDCManager:
         await writer.drain()
         writer.close()
         await writer.wait_closed()
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        if attempt.status != "pending":
+            await self._close_listener(attempt)
 
-    async def _complete(self, *, code: str, verifier: str) -> None:
+    async def _complete(
+        self,
+        *,
+        code: str,
+        verifier: str,
+        redirect_uri: str = CALLBACK_URI,
+    ) -> None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             token_response = await client.post(
                 f"{self._base_url}/oauth/token",
@@ -389,7 +691,7 @@ class AccountOIDCManager:
                     "grant_type": "authorization_code",
                     "code": code,
                     "client_id": self._client_id,
-                    "redirect_uri": CALLBACK_URI,
+                    "redirect_uri": redirect_uri,
                     "code_verifier": verifier,
                 },
             )
@@ -398,10 +700,19 @@ class AccountOIDCManager:
                     f"token exchange failed with HTTP {token_response.status_code}"
                 )
             tokens = token_response.json()
-            access_token = str(tokens.get("access_token", ""))
-            refresh_token = str(tokens.get("refresh_token", ""))
-            if not access_token or not refresh_token:
-                raise AccountOIDCError("token response is incomplete")
+        await self._accept_tokens(tokens)
+
+    async def _accept_tokens(self, tokens: dict) -> None:
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        if (
+            not isinstance(access_token, str)
+            or not isinstance(refresh_token, str)
+            or not access_token
+            or not refresh_token
+        ):
+            raise AccountOIDCError("token response is incomplete")
+        async with httpx.AsyncClient(timeout=10.0) as client:
             userinfo_response = await client.get(
                 f"{self._base_url}/oauth/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -461,11 +772,11 @@ class AccountOIDCManager:
             raise AccountOIDCError("refresh response is incomplete")
         return self._access_token
 
-    async def _expire_attempt(self, attempt: LoginAttempt) -> None:
-        await asyncio.sleep(180)
+    def _expire_attempt(self, attempt: LoginAttempt) -> None:
         if attempt.status == "pending":
             attempt.status = "expired"
-            if self._server is not None:
+            attempt.device_code = ""
+            if self._listener_attempt is attempt and self._server is not None:
                 self._server.close()
-                await self._server.wait_closed()
                 self._server = None
+                self._listener_attempt = None

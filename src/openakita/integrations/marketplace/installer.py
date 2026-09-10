@@ -173,7 +173,33 @@ class MarketplaceInstallManager:
         hidden = {"token", "download_url", "signature", "verification"}
         return {key: value for key, value in job.items() if key not in hidden}
 
-    async def prepare(self, token: str, endpoint: str) -> dict[str, Any]:
+    async def _authorize(self, token: str, endpoint: str, request: Any, *, confirm: bool = False) -> dict:
+        from openakita.account.oidc import AccountOIDCError
+
+        account = getattr(request.app.state, "account_oidc_manager", None)
+        if account is None:
+            raise MarketplaceInstallError("marketplace_account_required")
+        try:
+            proof = await account.marketplace_install_proof(token, self.device_id)
+        except AccountOIDCError as exc:
+            raise MarketplaceInstallError(str(exc)) from exc
+        action = "authorize" if confirm else "consume"
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+                response = await client.post(
+                    f"{endpoint}/api/internal/openakita/install-instructions/{action}",
+                    json={"token": token, "device_id": self.device_id, "account_proof": proof},
+                )
+        except httpx.HTTPError as exc:
+            raise MarketplaceInstallError("marketplace_connection_failed") from exc
+        if response.status_code != 200:
+            errors = {401: "marketplace_account_required", 403: "marketplace_account_mismatch",
+                      404: "marketplace_instruction_unavailable", 409: "marketplace_instruction_unavailable",
+                      503: "marketplace_identity_unavailable"}
+            raise MarketplaceInstallError(errors.get(response.status_code, "marketplace_connection_failed"))
+        return response.json().get("data") or {}
+
+    async def prepare(self, token: str, endpoint: str, request: Any) -> dict[str, Any]:
         token = (token or "").strip().lower()
         if not TOKEN_RE.fullmatch(token):
             raise MarketplaceInstallError("marketplace_instruction_invalid")
@@ -182,19 +208,7 @@ class MarketplaceInstallManager:
             for existing in self._jobs.values():
                 if existing.get("token") == token and existing.get("endpoint") == endpoint:
                     return self._public(existing)
-            try:
-                async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-                    response = await client.post(
-                        f"{endpoint}/api/internal/openakita/install-instructions/consume",
-                        json={"token": token, "device_id": self.device_id},
-                    )
-            except httpx.HTTPError as exc:
-                raise MarketplaceInstallError("marketplace_connection_failed") from exc
-            if response.status_code in (404, 409):
-                raise MarketplaceInstallError("marketplace_instruction_unavailable")
-            if response.status_code != 200:
-                raise MarketplaceInstallError("marketplace_connection_failed")
-            payload = response.json().get("data") or {}
+            payload = await self._authorize(token, endpoint, request)
             self._validate_instruction(payload)
             job_id = str(payload["id"])
             job = {
@@ -248,6 +262,9 @@ class MarketplaceInstallManager:
                 return self._public(job)
             if job.get("status") != "ready":
                 raise MarketplaceInstallError("marketplace_install_busy")
+            # Recheck the current account and entitlement after the preview;
+            # neither a cached proof nor the preview authorizes an installation.
+            await self._authorize(job["token"], job["endpoint"], request, confirm=True)
             job["status"] = "downloading"
             job["progress"] = 5
             job["failure_code"] = ""
