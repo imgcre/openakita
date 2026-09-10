@@ -306,6 +306,10 @@ jobs:
           echo "All $MAX_ATTEMPTS attempts failed"
           exit 1
 
+      - name: Verify Linux DEB URI handoff
+        if: runner.os == 'Linux'
+        run: python scripts/verify_linux_deb.py --target "${{ matrix.rust_target }}"
+
       - name: Re-sign final macOS app bundles for notarization
         if: runner.os == 'macOS'
         env:
