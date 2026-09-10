@@ -17,6 +17,18 @@ beforeEach(async () => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const props = { apiBaseUrl: 'https://home.example', desktopVersion: '1.27.40' };
+it('shows dependency activity and elapsed time using the shared progress view instead of a fixed 70 percent', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: {
+    ...baseJob, status: 'installing', progress: 70, stage: 'dependency_downloading',
+    current_dependency: 'python-pptx', elapsed_seconds: 95,
+  } }))));
+  render(<MarketplaceInstallDialog {...props} />);
+  await screen.findByText(i18n.t('marketplaceInstall.stages.dependency_downloading'));
+  expect(screen.getByRole('dialog')).toHaveTextContent('python-pptx');
+  expect(screen.getByRole('dialog')).toHaveTextContent('1:35');
+  expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
+  expect(screen.getByRole('dialog')).not.toHaveTextContent('70%');
+});
 it('shows the target and permissions, persists the job and resumes after remount without reinstalling', async () => {
   let status = 'ready';
   const calls: string[] = [];

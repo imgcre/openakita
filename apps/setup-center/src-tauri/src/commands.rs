@@ -22,6 +22,7 @@ pub(crate) fn invoke_handler() -> impl Fn(tauri::ipc::Invoke<tauri::Wry>) -> boo
         check_python_for_pip,
         openakita_runtime_last_error,
         openakita_desktop_session_token,
+        openakita_account_session_token,
         openakita_open_runtime_root,
         install_bundled_python,
         create_venv,

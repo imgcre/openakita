@@ -55,7 +55,7 @@ async def ready_poll(manager, attempt):
 async def test_device_login_requires_no_callback_listener_or_configuration(
     device_provider, monkeypatch
 ):
-    manager, _, requests, _ = device_provider
+    manager, replies, requests, _ = device_provider
     listener = AsyncMock(side_effect=OSError("occupied"))
     monkeypatch.setattr(asyncio, "start_server", listener)
     attempt = await manager.start(flow="device")
@@ -95,7 +95,7 @@ async def test_device_redemption_happens_once_with_concurrent_frontend_polls(dev
     assert len(requests) == 2
     assert parse_qs(requests[-1].content.decode())["grant_type"] == [DEVICE_GRANT_TYPE]
     manager._accept_tokens.assert_awaited_once_with(
-        {"access_token": "access", "refresh_token": "refresh"}
+        {"access_token": "access", "refresh_token": "refresh"}, attempt.generation
     )
     assert attempt.device_code == ""
 
@@ -115,13 +115,14 @@ async def test_device_terminal_provider_responses(device_provider, error, status
 
 @pytest.mark.parametrize("action", ["cancel", "expire", "logout"])
 async def test_cancel_expiry_logout_stop_polling(device_provider, action):
-    manager, _, requests, _ = device_provider
+    manager, replies, requests, _ = device_provider
     attempt = await manager.start(flow="device")
     if action == "cancel":
         await manager.cancel(attempt.attempt_id)
     elif action == "expire":
         attempt.created_at = time.time() - 601
     else:
+        manager._tokens.load_refresh_token.return_value = None
         await manager.logout()
     await ready_poll(manager, attempt)
     assert attempt.status in {"cancelled", "expired"}
@@ -167,7 +168,7 @@ async def test_old_account_service_reports_upgrade_instead_of_loopback(monkeypat
     assert not manager._attempts and manager._server is None
 
 
-async def test_local_pkce_and_device_attempts_do_not_close_each_others_listener(
+async def test_new_device_login_supersedes_loopback_without_closing_future_listener(
     device_provider, monkeypatch
 ):
     manager, _, _, _ = device_provider
@@ -177,7 +178,8 @@ async def test_local_pkce_and_device_attempts_do_not_close_each_others_listener(
     desktop = await manager.start()
     remote = await manager.start(flow="device")
     manager._expire_attempt(remote)
-    server.close.assert_not_called()
+    server.close.assert_called_once()
+    assert desktop.status == "expired"
     await manager.cancel(desktop.attempt_id)
     server.close.assert_called_once()
 
@@ -196,8 +198,9 @@ async def test_tokens_use_existing_identity_and_keyring_storage(monkeypatch):
     )
     tokens, store = AsyncMock(), AsyncMock()
     manager = AccountOIDCManager(store=store, token_store=tokens)
-    manager.refresh_entitlements = AsyncMock()
-    await manager._accept_tokens({"access_token": "access", "refresh_token": "refresh"})
+    manager._refresh_entitlements_locked = AsyncMock()
+    tokens.load_refresh_token.return_value = None
+    await manager._accept_tokens({"access_token": "access", "refresh_token": "refresh"}, manager._generation)
     tokens.save_refresh_token.assert_awaited_once_with("refresh")
     store.save_authenticated.assert_awaited_once()
 

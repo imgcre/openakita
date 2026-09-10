@@ -61,6 +61,7 @@ import { OrgInboxSidebar } from "../components/OrgInboxSidebar";
 import { WorkbenchNodePicker, type WorkbenchTemplate } from "../components/WorkbenchNodePicker";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { OrgAvatar, AVATAR_PRESETS } from "../components/OrgAvatars";
+import { OrgEndpointSettings } from "../components/OrgEndpointSettings";
 import { AgentIcon } from "../components/AgentIcon";
 import { OrgChatPanel } from "../components/OrgChatPanel";
 import { TemplatePickerDialog } from "../components/TemplatePickerDialog";
@@ -4835,31 +4836,18 @@ export function OrgEditorView({
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3 px-4 pb-4">
-                    <ShadInput
-                      value={selectedNode.preferred_endpoint || ""}
-                      onChange={(e) => {
-                        const value = e.target.value || null;
+                    <OrgEndpointSettings
+                      apiBaseUrl={apiBaseUrl}
+                      visible={visible}
+                      endpoint={selectedNode.preferred_endpoint || null}
+                      policy={selectedNode.endpoint_policy || "prefer"}
+                      disabled={!!liveMode}
+                      onEndpointChange={(value) => {
                         updateNodeData("preferred_endpoint", value);
                         if (!value) updateNodeData("endpoint_policy", "prefer");
                       }}
-                      placeholder={t("org.editor.llmEndpointPlaceholder")}
-                      className="h-8 text-xs"
+                      onPolicyChange={(value) => updateNodeData("endpoint_policy", value)}
                     />
-                    <div className="space-y-1.5">
-                      <ShadLabel className="text-xs opacity-70">{t("org.editor.llmEndpointPolicy")}</ShadLabel>
-                      <select
-                        value={selectedNode.endpoint_policy || "prefer"}
-                        onChange={(e) => updateNodeData("endpoint_policy", e.target.value)}
-                        className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs"
-                        disabled={!selectedNode.preferred_endpoint}
-                      >
-                        <option value="prefer">{t("org.editor.llmEndpointPolicyPrefer")}</option>
-                        <option value="require">{t("org.editor.llmEndpointPolicyRequire")}</option>
-                      </select>
-                      <p className="text-[11px] text-muted-foreground">
-                        {t("org.editor.llmEndpointPolicyHint")}
-                      </p>
-                    </div>
                   </CardContent>
                 </Card>
                 </fieldset>

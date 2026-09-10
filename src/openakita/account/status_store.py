@@ -199,7 +199,8 @@ class AccountStatusStore:
             await conn.close()
 
     async def save_authenticated(
-        self, *, account_user_id: str, profile_json: str, session_id: str
+        self, *, account_user_id: str, profile_json: str, session_id: str,
+        credential_hash: str | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
         conn = await self._connect()
@@ -236,11 +237,11 @@ class AccountStatusStore:
             await conn.execute(
                 """
                 INSERT INTO account_sessions
-                    (session_id, account_user_id, created_at)
-                VALUES (?, ?, ?)
+                    (session_id, account_user_id, created_at, refresh_token_hash)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET revoked_at = NULL
                 """,
-                (session_id, account_user_id, now),
+                (session_id, account_user_id, now, credential_hash),
             )
             await conn.commit()
         finally:
@@ -261,7 +262,7 @@ class AccountStatusStore:
         finally:
             await conn.close()
 
-    async def snapshot(self) -> dict | None:
+    async def snapshot(self, *, credential_hash: str | None = None) -> dict | None:
         conn = await self._connect()
         try:
             cursor = await conn.execute(
@@ -270,8 +271,14 @@ class AccountStatusStore:
                        s.fetched_at, u.status, u.status_reason
                 FROM account_identity_snapshot s
                 JOIN account_users u ON u.account_user_id = s.account_user_id
+                WHERE (? IS NULL OR EXISTS (
+                    SELECT 1 FROM account_sessions a
+                    WHERE a.account_user_id = s.account_user_id
+                      AND a.refresh_token_hash = ? AND a.revoked_at IS NULL
+                ))
                 ORDER BY s.fetched_at DESC LIMIT 1
-                """
+                """,
+                (credential_hash, credential_hash),
             )
             row = await cursor.fetchone()
             if not row:
@@ -284,6 +291,18 @@ class AccountStatusStore:
                 "status": row["status"],
                 "status_reason": row["status_reason"],
             }
+        finally:
+            await conn.close()
+
+    async def rotate_credential(self, previous: str, current: str) -> None:
+        conn = await self._connect()
+        try:
+            await conn.execute(
+                "UPDATE account_sessions SET refresh_token_hash = ? "
+                "WHERE refresh_token_hash = ? AND revoked_at IS NULL",
+                (current, previous),
+            )
+            await conn.commit()
         finally:
             await conn.close()
 

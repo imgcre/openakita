@@ -17,6 +17,7 @@ from openakita.account.oidc import (
     clear_disabled_account_credentials,
     pkce_challenge,
 )
+from tests.fixtures.account import MemoryTokenStore
 
 
 def test_pkce_challenge_rfc7636_vector() -> None:
@@ -33,7 +34,7 @@ async def test_loopback_callback_rejects_wrong_state_without_consuming_attempt()
     assert attempt.status == "pending"
     assert await manager.complete_callback(attempt, state="expected-state", code="code")
     manager._complete.assert_awaited_once_with(
-        code="code", verifier="verifier", redirect_uri=CALLBACK_URI
+        code="code", verifier="verifier", redirect_uri=CALLBACK_URI, generation=attempt.generation
     )
 
 
@@ -96,20 +97,6 @@ def test_callback_page_is_localized_and_handles_both_states() -> None:
     assert "127.0.0.1" not in success
 
 
-class _TokenStore:
-    def __init__(self, token: str | None) -> None:
-        self.token = token
-
-    async def load_refresh_token(self) -> str | None:
-        return self.token
-
-    async def save_refresh_token(self, token: str) -> None:
-        self.token = token
-
-    async def clear(self) -> None:
-        self.token = None
-
-
 class _SnapshotStore:
     async def snapshot(self) -> dict:
         return {"status": "active", "account_user_id": "user-1"}
@@ -137,7 +124,7 @@ class _CallbackWriter:
 async def test_callback_returns_localized_secure_html() -> None:
     manager = AccountOIDCManager(
         store=_SnapshotStore(),  # type: ignore[arg-type]
-        token_store=_TokenStore(None),
+        token_store=MemoryTokenStore(None),
     )
     manager._complete = AsyncMock()  # type: ignore[method-assign]
     attempt = LoginAttempt(
@@ -171,26 +158,24 @@ def test_account_base_url_defaults_to_hosted_service(monkeypatch: pytest.MonkeyP
     monkeypatch.delenv("OPENAKITA_ACCOUNT_BASE_URL", raising=False)
     manager = AccountOIDCManager(
         store=_SnapshotStore(),  # type: ignore[arg-type]
-        token_store=_TokenStore(None),
+        token_store=MemoryTokenStore(None),
     )
 
-    assert manager._base_url == DEFAULT_ACCOUNT_BASE_URL
+    assert manager._base_url == DEFAULT_ACCOUNT_BASE_URL == "https://account.openakita.cn"
 
 
 @pytest.mark.asyncio
-async def test_manager_uses_configured_client_id_in_provider_requests() -> None:
+async def test_signed_out_custom_provider_logout_stays_in_product() -> None:
     manager = AccountOIDCManager(
         store=_SnapshotStore(),  # type: ignore[arg-type]
-        token_store=_TokenStore(None),
+        token_store=MemoryTokenStore(None),
         account_base_url="https://accounts.vendor.example",
         client_id="vendor-desktop",
     )
 
     logout_url = await manager.logout()
 
-    assert logout_url == (
-        "https://accounts.vendor.example/oauth/end-session?client_id=vendor-desktop"
-    )
+    assert logout_url == ""
 
 
 @pytest.mark.asyncio
@@ -218,7 +203,7 @@ async def test_disabled_mode_clears_known_credential_slots(monkeypatch) -> None:
 async def test_snapshot_requires_refresh_token_even_when_offline_cache_exists() -> None:
     manager = AccountOIDCManager(
         store=_SnapshotStore(),  # type: ignore[arg-type]
-        token_store=_TokenStore(None),
+        token_store=MemoryTokenStore(None),
     )
 
     assert await manager.snapshot() == {"status": "signed_out"}

@@ -64,6 +64,20 @@ export function buildMarketplaceContextUrl(
   return contextUrl.toString();
 }
 
+/** Preserve the browser's own session; the server resolves desktop identity conflicts. */
+export function buildMarketplaceHandoffUrl(
+  version: string,
+  ticket: string,
+  next = "/",
+  configuredOrigin?: string,
+): string {
+  if (!/^[A-Za-z0-9_-]{32,512}$/.test(ticket)) throw new Error("marketplace_handoff_invalid");
+  const context = new URL(buildMarketplaceContextUrl(version, next, configuredOrigin));
+  const target = new URL("/auth/desktop", context.origin);
+  target.search = new URLSearchParams({ ticket, next: context.pathname + context.search }).toString();
+  return target.toString();
+}
+
 export function marketplaceDeepLinkAction(value: string): MarketplaceDeepLinkAction {
   try {
     const url = new URL(value);

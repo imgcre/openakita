@@ -76,7 +76,9 @@
     "signOut": "Sign out",
     "signingOut": "Signing out…",
     "signedOutSuccess": "Signed out",
-    "signOutFailed": "Could not sign out"
+    "signOutFailed": "Could not sign out",
+    "identityUnavailable": "Sign-in status unconfirmed",
+    "identityUnavailableHint": "The saved account could not be verified. Retry syncing or sign in again."
   },
   "topbar": {
     "openMarketplace": "Open Marketplace",
@@ -135,7 +137,8 @@
     "webAccess": "Web Access",
     "remoteUrl": "Remote URL",
     "copyRemoteUrl": "Copy remote access URL",
-    "ipNotFound": "Cannot detect LAN IP. Use ipconfig / ifconfig to check"
+    "ipNotFound": "Cannot detect LAN IP. Use ipconfig / ifconfig to check",
+    "marketplaceDesktopConnectionFailed": "The account connection between the desktop and local service is not ready. Restart both and try again."
   },
   "remoteAccess": {
     "quickCopy": "Quick Copy URL",
@@ -4151,6 +4154,14 @@
       "autoCloneDetailDesc": "When pending tasks exceed threshold, clones are auto-created. Clones share role memory, and the same task chain is handled by the same clone. Idle clones are reclaimed during heartbeat.",
       "permissionsTitle": "Permissions",
       "llmEndpointTitle": "LLM Endpoint Preference",
+      "llmEndpointDefault": "Use default endpoint",
+      "llmEndpointUnlisted": "Not found in the current list",
+      "llmEndpointUnhealthy": "Temporarily unavailable",
+      "llmEndpointRefresh": "Refresh endpoints",
+      "llmEndpointLoading": "Loading endpoints…",
+      "llmEndpointLoadError": "Could not load endpoints. Check the backend connection and refresh. Your saved selection is preserved.",
+      "llmEndpointEmpty": "No endpoints available. Add an endpoint in model settings, then refresh.",
+      "llmEndpointLocked": "Pause or stop the organization before changing member endpoints.",
       "edgeSource": "Source",
       "edgeTarget": "Target",
       "edgeTypeLabel": "Edge Type"
@@ -4194,8 +4205,20 @@
     "install": "Install",
     "completed": "The resource is installed and ready to use in OpenAkita.",
     "completedRestart": "The resource is installed and will be ready after OpenAkita restarts.",
-    "types": { "plugin": "Plugin", "skill": "Skill", "mcp": "MCP" },
-    "status": { "ready": "Ready", "downloading": "Downloading", "verifying": "Verifying", "installing": "Installing", "installed": "Installed", "failed": "Failed", "cancelled": "Cancelled" },
+    "types": {
+      "plugin": "Plugin",
+      "skill": "Skill",
+      "mcp": "MCP"
+    },
+    "status": {
+      "ready": "Ready",
+      "downloading": "Downloading",
+      "verifying": "Verifying",
+      "installing": "Installing",
+      "installed": "Installed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
     "errors": {
       "marketplace_server_login_required": "The target server connection credentials expired. Reconnect to that server.",
       "marketplace_account_unsupported": "This account provider does not support official Marketplace installations.",
@@ -4233,8 +4256,65 @@
       "marketplace_mcp_install_failed": "The MCP server could not be installed.",
       "marketplace_runtime_unavailable": "OpenAkita is not ready yet. Try again shortly.",
       "marketplace_install_interrupted": "The previous installation was interrupted. Try again.",
-      "marketplace_install_failed": "Installation was not completed. Start it again from Marketplace."
-    }
+      "marketplace_install_failed": "Installation was not completed. Start it again from Marketplace.",
+      "marketplace_install_state_changed": "The local installation changed. Review the version and confirm again; if installation stopped, reopen it from Marketplace.",
+      "marketplace_account_authorization_failed": "Your account could not be verified. Sign in again and retry."
+    },
+    "failureReasons": {
+      "dependency_network": "The plugin dependency download was interrupted and the automatic retry also failed.",
+      "dependency_timeout": "Plugin dependency installation timed out.",
+      "dependency_runtime": "Could not start or run the Python dependency installer.",
+      "dependency_install": "Python dependency installation failed. See the details below."
+    },
+    "failureStage": "Failed during: {{stage}}",
+    "lastDependency": "Last dependency processed: {{name}}",
+    "networkRetryHint": "Check your network, proxy, or Python package mirror connection, then start installation again from the marketplace.",
+    "failureRetryHint": "Resolve the issue above, then start installation again from the marketplace.",
+    "pluginSetup": {
+      "done": "Done",
+      "failed": "Could not verify plugin status. Retry the check; the package is installed and does not need downloading again.",
+      "working": "Checking permissions and loading the plugin…",
+      "permissions": "Plugin installed. Grant the permissions below to use all features. Without them, some features may be unavailable.",
+      "grant": "Grant and continue",
+      "later": "Set up later",
+      "retry": "Check again",
+      "disabled": "Plugin installed. Your previous disabled setting was preserved. You can enable it here.",
+      "enable": "Enable plugin",
+      "ready": "Plugin permissions are ready and the plugin has loaded successfully.",
+      "staged": "The new version is installed but not active yet. Apply the update first, then review its permissions.",
+      "applyUpdate": "Apply update and continue",
+      "enableUpdate": "Enable and apply update",
+      "notLoaded": "The plugin is installed but has not loaded successfully. Try loading it; if the service is not ready, start it and retry.",
+      "load": "Load plugin"
+    },
+    "currentDependency": "Processing: {{name}}",
+    "elapsed": "Elapsed {{time}}",
+    "stages": {
+      "downloading": "Downloading package…",
+      "verifying": "Verifying package…",
+      "extracting": "Extracting package…",
+      "installing": "Installing files…",
+      "dependencies": "Resolving dependencies…",
+      "dependency_resolving": "Resolving dependencies…",
+      "dependency_downloading": "Downloading dependency…",
+      "dependency_building": "Building dependency…",
+      "dependency_installing": "Installing dependencies…",
+      "dependency_retrying": "Dependency download interrupted; retrying without cache…",
+      "loading": "Loading plugin…"
+    },
+    "upgradeTitle": "Upgrade Marketplace resource",
+    "upgrade": "Confirm upgrade",
+    "replace": "Confirm replacement",
+    "upgradeHint": "Version {{current}} is installed. Upgrade to version {{target}}?",
+    "downgradeHint": "A newer version ({{current}}) is installed. The selected version ({{target}}) will not replace it.",
+    "replaceHint": "A resource with the same name exists, but its source or version could not be confirmed. Continuing will replace its files.",
+    "alreadyInstalled": "Version {{version}} is already installed. No reinstallation is needed; existing files and enabled state are unchanged.",
+    "alreadyInstalledPending": "Version {{version}} is already staged and will take effect after restarting OpenAkita. No reinstallation is needed.",
+    "skillActivationHint": "New skills are enabled automatically. Updates and reinstalls keep your existing enabled or disabled setting.",
+    "completedSkillEnabled": "The skill is installed and enabled for your next message. Some skills still require an external service or credentials.",
+    "completedSkillDisabled": "The skill is installed and remains disabled, as previously configured. Enable it in Skill Manager when you want to use it.",
+    "completedSkillRestart": "The skill is installed and set to enabled, but runtime loading has not completed. Restart OpenAkita before using it.",
+    "completedSkillUnknown": "The skill is installed. Check its enabled status in Skill Manager."
   },
   "knowledgeBase": {
     "title": "Cloud Knowledge",

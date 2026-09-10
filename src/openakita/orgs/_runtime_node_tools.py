@@ -1698,6 +1698,8 @@ async def run_with_tools(
     second_round_caller: Callable[[list[dict[str, Any]]], Awaitable[Any]] | None = None,
     tool_host: NodeToolHost | None = None,
     cancel_event: asyncio.Event | None = None,
+    endpoint_name: str | None = None,
+    endpoint_policy: str | None = None,
 ) -> tuple[Any, int]:
     """Bounded multi-round ReAct loop on :meth:`Brain.messages_create_async`.
 
@@ -1746,6 +1748,11 @@ async def run_with_tools(
             system=system_prompt,
             tools=tools if with_tools else [],
             cancel_event=cancel_event,
+            **(
+                {"endpoint_name": endpoint_name, "endpoint_policy": endpoint_policy}
+                if endpoint_name
+                else {}
+            ),
         )
         # test13 fix (a).2: bound ONE brain call so a hung provider request
         # cannot silently consume the whole node activation budget. On timeout

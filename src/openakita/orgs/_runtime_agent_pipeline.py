@@ -154,6 +154,8 @@ class AgentSpec:
     external_tools: tuple[str, ...] = ()
     enable_file_tools: bool = True
     available_nodes: tuple[tuple[str, str], ...] = ()
+    preferred_endpoint: str | None = None
+    endpoint_policy: str = "prefer"
 
 
 def _capability_label(node: Any) -> str:
@@ -257,6 +259,13 @@ class AgentCache:
 
         key = (spec.org_id, spec.node_id)
         entry = self._entries.get(key)
+        if entry is not None and (
+            entry.spec.preferred_endpoint != spec.preferred_endpoint
+            or entry.spec.endpoint_policy != spec.endpoint_policy
+        ):
+            # A stopped/paused org can be edited while its node agents remain cached.
+            self.evict(*key)
+            entry = None
         if entry is not None:
             entry.last_used_at = time()
             return entry.agent
@@ -362,6 +371,11 @@ class ProfileResolver:
         external_tools = self._external_tools_for(node_obj)
         enable_file_tools = self._enable_file_tools_for(node_obj)
         available_nodes = self._available_nodes_for(org, node_id)
+        endpoint = getattr(node_obj, "preferred_endpoint", None)
+        endpoint = (endpoint.strip() or None) if isinstance(endpoint, str) else None
+        policy = getattr(node_obj, "endpoint_policy", "prefer")
+        if not endpoint or policy not in {"prefer", "require"}:
+            policy = "prefer"
         return AgentSpec(
             org_id=org_id,
             node_id=node_id,
@@ -373,6 +387,8 @@ class ProfileResolver:
             external_tools=external_tools,
             enable_file_tools=enable_file_tools,
             available_nodes=available_nodes,
+            preferred_endpoint=endpoint,
+            endpoint_policy=policy,
         )
 
     @staticmethod

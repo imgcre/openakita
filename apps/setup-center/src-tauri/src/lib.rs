@@ -1,4 +1,5 @@
 mod app;
+mod account_native;
 pub(crate) mod backend;
 pub(crate) mod commands;
 mod config;
@@ -15,6 +16,7 @@ mod runtime;
 mod workspace;
 
 pub(crate) mod prelude {
+    pub(crate) use crate::account_native::*;
     pub(crate) use crate::backend::*;
     pub(crate) use crate::config::*;
     pub(crate) use crate::environment::*;

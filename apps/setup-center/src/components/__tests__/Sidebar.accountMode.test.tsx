@@ -6,6 +6,7 @@ import { Sidebar } from "../Sidebar";
 import { connectOpenAkitaAccount, loadAccountCapability } from "../../utils/accountLogin";
 
 vi.mock("../../utils/accountLogin", () => ({
+  getAccountGeneration: () => 0,
   connectOpenAkitaAccount: vi.fn(),
   disconnectOpenAkitaAccount: vi.fn(),
   loadAccountCapability: vi.fn(),

@@ -410,7 +410,7 @@ def install_uv(bin_dir: Path) -> Path:
             "--target",
             str(BUILD_BOOTSTRAP_UV),
             "--prefer-binary",
-            "uv",
+            f"uv=={UV_VERSION}",
         ],
         cwd=ROOT,
         check=True,
@@ -802,7 +802,10 @@ def write_manifest(
         manifest["python_version"] = ".".join(seed_ver.split(".")[:2])
     else:
         manifest["python_version"] = f"{sys.version_info.major}.{sys.version_info.minor}"
-    manifest["python_abi"] = sysconfig.get_config_var("SOABI") or f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if python_seed and python_seed.get("packaged"):
+        manifest["python_abi"] = "cp" + manifest["python_version"].replace(".", "")
+    else:
+        manifest["python_abi"] = sysconfig.get_config_var("SOABI") or f"cp{sys.version_info.major}{sys.version_info.minor}"
     manifest["wheel_tag"] = "py3-none-any"
     manifest["wheel"] = {
         "name": wheel_name,

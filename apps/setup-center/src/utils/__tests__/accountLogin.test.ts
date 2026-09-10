@@ -363,4 +363,37 @@ describe("account login flow", () => {
     await rejected;
     expect(safeFetch).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["login", "refresh"])("discards a delayed %s snapshot after logout", async (kind) => {
+    let release!: (value: Response) => void;
+    const delayed = new Promise<Response>((resolve) => { release = resolve; });
+    const requested = vi.fn();
+    vi.mocked(safeFetch).mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.endsWith("/login/start")) return response({ attempt_id: "old", authorization_url: "https://account.example/authorize" });
+      if (path.includes("/login/status/")) return response({ status: "complete" });
+      if (path.endsWith("/status") && !requested.mock.calls.length) {
+        requested();
+        return delayed;
+      }
+      if (path.endsWith("/status")) return response({ status: "signed_out" });
+      return response({ ok: true });
+    });
+    const listener = vi.fn();
+    window.addEventListener(ACCOUNT_STATUS_CHANGED_EVENT, listener);
+    try {
+      const old = kind === "login"
+        ? connectOpenAkitaAccount("http://localhost:18900", { pollIntervalMs: 0 })
+        : refreshOpenAkitaAccountEntitlements("http://localhost:18900");
+      const rejected = expect(old).rejects.toThrow("account_operation_superseded");
+      await vi.waitFor(() => expect(requested).toHaveBeenCalledOnce());
+      await disconnectOpenAkitaAccount("http://localhost:18900");
+      release(response({ status: "active", account_user_id: "old-account" }));
+      await rejected;
+      expect(listener).toHaveBeenCalledOnce();
+      expect((listener.mock.calls[0][0] as CustomEvent).detail.status).toBe("signed_out");
+    } finally {
+      window.removeEventListener(ACCOUNT_STATUS_CHANGED_EVENT, listener);
+    }
+  });
 });

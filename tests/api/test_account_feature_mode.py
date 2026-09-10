@@ -1,6 +1,19 @@
+from unittest.mock import AsyncMock
+
+import pytest
 from fastapi.testclient import TestClient
 
 from openakita.api.server import create_app
+
+
+@pytest.fixture(autouse=True)
+def isolated_account_credentials(tmp_path, monkeypatch):
+    from openakita.config import settings
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("OPENAKITA_ROOT", str(tmp_path / "home"))
+    monkeypatch.setattr(settings, "project_root", tmp_path)
+    monkeypatch.setattr("openakita.account.oidc.KeyringTokenStore.clear", AsyncMock())
 
 
 def test_disabled_account_mode_only_exposes_capability(monkeypatch) -> None:

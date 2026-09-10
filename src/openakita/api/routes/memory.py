@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from openakita.memory.retention import apply_retention
+from openakita.memory.session_identity import DESKTOP_USER_ID
 from openakita.memory.types import MemoryPriority, MemoryType, SemanticMemory
 
 logger = logging.getLogger(__name__)
@@ -248,7 +249,7 @@ def _current_owner(request: Request) -> tuple[str, str]:
     #    ContextVar value above is trusted; when it is the generic fallback we
     #    resolve to the desktop identity.
     if user_id in ("default", "", "anonymous"):
-        user_id = "desktop_user"
+        user_id = DESKTOP_USER_ID
 
     return user_id, workspace_id
 

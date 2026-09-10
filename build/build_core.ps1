@@ -17,7 +17,7 @@ try {
 } finally { Pop-Location }
 
 Write-Host "[2/3] Preparing managed Python runtime..." -ForegroundColor Yellow
-uv run --no-sync python "$ScriptDir\prepare_bootstrap_resources.py" --commit-resources --target-platform win-x64 --require-python-seed
+uv run --no-sync python "$ScriptDir\prepare_bootstrap_resources.py" --commit-resources --target-platform win-x64 --require-python-seed --require-real-assets
 if ($LASTEXITCODE -ne 0) { throw "Bootstrap resource preparation failed" }
 
 Write-Host "[3/3] Building Tauri app..." -ForegroundColor Yellow

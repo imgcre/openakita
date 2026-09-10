@@ -27,7 +27,7 @@ export function targetIsCurrent(target: Target) {
 
 /** Freeze both the address and its credential. Never use the global interceptor's
  * currently selected token for an older operation after a server switch. */
-function targetRequest(target: Target, timeout = 25_000) {
+export function targetFetch(target: Target, timeout = 25_000) {
   if (!targetIsCurrent(target)) throw new Error('marketplace_target_changed');
   const token = getAccessToken();
   return async (path: string, init?: RequestInit) => {
@@ -41,8 +41,16 @@ function targetRequest(target: Target, timeout = 25_000) {
       signal: AbortSignal.timeout(timeout),
     });
     if (!targetIsCurrent(target)) throw new Error('marketplace_target_changed');
+    return response;
+  };
+}
+
+function targetRequest(target: Target, timeout = 25_000) {
+  const request = targetFetch(target, timeout);
+  return async (path: string, init?: RequestInit) => {
+    const response = await request(path, init);
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(response.status === 401 ? 'marketplace_server_login_required'
+    if (!response.ok) throw new Error([401, 403].includes(response.status) ? 'marketplace_server_login_required'
       : body?.detail?.code || 'marketplace_connection_failed');
     return body;
   };

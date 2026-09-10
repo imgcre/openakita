@@ -752,6 +752,7 @@ class Agent:
             embedding_api_key=settings.embedding_api_key,
             embedding_api_model=settings.embedding_api_model,
             agent_id=self.name,
+            desktop_owner_alignment=True,
         )
         self._memory_backends: dict[str, dict] = {}
         self.memory_manager.set_plugin_backends(self._memory_backends)
@@ -4629,22 +4630,20 @@ class Agent:
         # memory safe_id 统一用 session.session_key 派生，与 im_channel fallback
         # 和 sessions/manager backfill 的查询逻辑保持一致。
         try:
-            _memory_key = (
-                session.session_key
-                if session and hasattr(session, "session_key")
-                else conversation_id
-            )
-            conversation_safe_id = _memory_key.replace(":", "__")
-            conversation_safe_id = re.sub(r'[/\\+=%?*<>|"\x00-\x1f]', "_", conversation_safe_id)
+            from ..memory.session_identity import memory_session_id, memory_session_user
+
+            conversation_safe_id = memory_session_id(session, conversation_id)
+            memory_user_id = memory_session_user(session)
             memory_workspace_id = self._resolve_memory_workspace_id(session)
             if (
                 getattr(self.memory_manager, "_current_session_id", None) != conversation_safe_id
                 or getattr(self.memory_manager, "_current_workspace_id", None)
                 != memory_workspace_id
+                or getattr(self.memory_manager, "_current_user_id", None) != memory_user_id
             ):
                 self.memory_manager.start_session(
                     conversation_safe_id,
-                    user_id=getattr(session, "user_id", None) if session else None,
+                    user_id=memory_user_id,
                     workspace_id=memory_workspace_id,
                     focus_terms=getattr(getattr(session, "context", None), "focus_terms", None),
                 )
@@ -4661,18 +4660,19 @@ class Agent:
                     if store and hasattr(store, "save_scratchpad"):
                         from ..memory.types import Scratchpad as _SpClear
 
-                        store.save_scratchpad(
-                            _SpClear(
-                                user_id=getattr(session, "user_id", "default")
-                                if session
-                                else "default"
-                            )
-                        )
+                        store.save_scratchpad(_SpClear(user_id=memory_user_id))
                         logger.debug(
                             f"[Session] Cleared scratchpad for new conversation {conversation_id}"
                         )
                 except Exception as _e:
                     logger.debug(f"[Session] Scratchpad clear failed (non-critical): {_e}")
+            # Older truncation jobs used Session.id instead of the stable
+            # memory key. Register that known alias from the actual Session,
+            # so queued historical jobs can resolve their owner without ID parsing.
+            if session is not None and getattr(session, "id", None):
+                self.memory_manager.store.upsert_session_tenant(
+                    session.id, memory_user_id, memory_workspace_id
+                )
         except Exception as e:
             logger.warning(f"[Memory] Failed to align memory session: {e}")
 

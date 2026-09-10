@@ -940,6 +940,7 @@ class _BrainBackedNodeAgent:
                 emit=self._event_emitter,
                 tool_host=tool_host,
                 cancel_event=cancel_event,
+                **self._endpoint_kwargs(),
             )
             return _extract_text_from_response(response)
         else:
@@ -964,8 +965,18 @@ class _BrainBackedNodeAgent:
                 system=system_prompt,
                 tools=[],
                 cancel_event=cancel_event,
+                **self._endpoint_kwargs(),
             )
             return _extract_text_from_response(response)
+
+    def _endpoint_kwargs(self) -> dict[str, str]:
+        """Scope model selection to each request; the Brain is shared across nodes."""
+        if not self._spec.preferred_endpoint:
+            return {}
+        return {
+            "endpoint_name": self._spec.preferred_endpoint,
+            "endpoint_policy": self._spec.endpoint_policy,
+        }
 
     async def _maybe_dispatch(
         self,
@@ -1432,6 +1443,7 @@ class _BrainBackedNodeAgent:
                 "messages": [{"role": "user", "content": user}],
                 "system": system,
                 "tools": [],
+                **self._endpoint_kwargs(),
             }
             if cancel_event is not None:
                 kwargs["cancel_event"] = cancel_event
@@ -1537,6 +1549,7 @@ class _BrainBackedNodeAgent:
                 system=system_prompt,
                 tools=[],
                 conversation_id=command_id or "",
+                **self._endpoint_kwargs(),
             )
             async for raw in stream:
                 if cancel_event is not None and cancel_event.is_set():

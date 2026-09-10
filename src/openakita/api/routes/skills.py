@@ -815,15 +815,12 @@ async def install_skill(request: Request):
         else None
     )
 
-    try:
-        from openakita.config import settings
-
-        workspace_dir = str(settings.project_root)
-    except Exception:
-        workspace_dir = str(Path.cwd())
-
+    from openakita.config import settings
     from openakita.setup_center.bridge import SkillInstallError
     from openakita.setup_center.bridge import install_skill as _install_skill
+
+    # The source checkout is a scan root, not the user skill installation root.
+    workspace_dir = str(settings.user_workspace_path)
 
     try:
         await asyncio.to_thread(
@@ -972,12 +969,10 @@ async def uninstall_skill(request: Request):
     if not skill_id:
         return {"error": "skill_id is required"}
 
-    try:
-        from openakita.config import settings
+    from openakita.config import settings
 
-        workspace_dir = str(settings.project_root)
-    except Exception:
-        workspace_dir = str(Path.cwd())
+    # Match marketplace and agent installs, including development and named workspaces.
+    workspace_dir = str(settings.user_workspace_path)
 
     try:
         from openakita.setup_center.bridge import uninstall_skill as _uninstall_skill

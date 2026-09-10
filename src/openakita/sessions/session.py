@@ -1038,12 +1038,22 @@ class Session:
         if store is None:
             return
         try:
+            from ..memory.session_identity import memory_session_id, memory_session_user
+            from ..memory.workspace_resolver import resolve_memory_workspace_id
+
+            safe_id = memory_session_id(self, self.id)
+            owner = memory_session_user(self)
+            workspace = resolve_memory_workspace_id(self)
+            # This may execute outside the chat task. Never borrow the mutable
+            # manager's current owner; the session being trimmed is authoritative.
+            store.upsert_session_tenant(safe_id, owner, workspace)
+            store.upsert_session_tenant(self.id, owner, workspace)
             for i, msg in enumerate(dropped):
                 content = msg.get("content", "")
                 if not content or not isinstance(content, str) or len(content) < 10:
                     continue
                 store.enqueue_extraction(
-                    session_id=self.id,
+                    session_id=safe_id,
                     turn_index=i,
                     content=content,
                     tool_calls=msg.get("tool_calls"),

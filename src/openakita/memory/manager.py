@@ -40,6 +40,7 @@ from .extractor import MemoryExtractor
 from .json_utils import coerce_text
 from .retention import apply_retention
 from .retrieval import RetrievalEngine
+from .session_identity import DESKTOP_USER_ID
 from .telemetry import emit_memory_health_event
 from .types import (
     Attachment,
@@ -72,9 +73,10 @@ class MemoryManager:
                 default=None,
             )
         if not hasattr(self, "_current_user_id_var"):
+            default_user = getattr(self, "_default_user_id", "default")
             self._current_user_id_var = contextvars.ContextVar(
                 f"openakita_memory_user_id_{id(self)}",
-                default="default",
+                default=default_user,
             )
         if not hasattr(self, "_current_workspace_id_var"):
             self._current_workspace_id_var = contextvars.ContextVar(
@@ -96,6 +98,24 @@ class MemoryManager:
                 f"openakita_memory_cited_{id(self)}",
                 default=None,
             )
+        if not hasattr(self, "_relational_pending_nodes_var"):
+            self._relational_pending_nodes_var = contextvars.ContextVar(
+                f"openakita_memory_relational_pending_{id(self)}", default=None
+            )
+
+    @property
+    def _relational_pending_nodes(self) -> list:
+        self._ensure_context_vars()
+        nodes = self._relational_pending_nodes_var.get()
+        if nodes is None:
+            nodes = []
+            self._relational_pending_nodes_var.set(nodes)
+        return nodes
+
+    @_relational_pending_nodes.setter
+    def _relational_pending_nodes(self, nodes: list) -> None:
+        self._ensure_context_vars()
+        self._relational_pending_nodes_var.set(nodes)
 
     @property
     def _current_session_id(self) -> str | None:
@@ -184,10 +204,20 @@ class MemoryManager:
         embedding_api_model: str = "",
         agent_id: str = "",
         identity_dir: Path | None = None,
+        desktop_owner_alignment: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.agent_id = agent_id
+        self._desktop_owner_alignment_requested = desktop_owner_alignment
+        # New desktop sessions must use the same identity as the panel even
+        # when historical data is ambiguous or its backup cannot be written.
+        # This changes only the implicit owner, not explicit IM/CLI identities.
+        self._default_user_id = (
+            DESKTOP_USER_ID
+            if desktop_owner_alignment and os.environ.get("OPENAKITA_DESKTOP_SESSION_TOKEN")
+            else "default"
+        )
 
         self.memory_md_path = Path(memory_md_path)
         self.identity_dir = Path(identity_dir) if identity_dir else self.memory_md_path.parent
@@ -227,7 +257,7 @@ class MemoryManager:
         )
         self._current_user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
             f"openakita_memory_user_id_{id(self)}",
-            default="default",
+            default=self._default_user_id,
         )
         self._current_workspace_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
             f"openakita_memory_workspace_id_{id(self)}",
@@ -247,7 +277,7 @@ class MemoryManager:
         )
 
         self._current_session_id: str | None = None
-        self._current_user_id: str = "default"
+        self._current_user_id: str = self._default_user_id
         self._current_workspace_id: str = "default"
         self._session_turns: list[ConversationTurn] = []
         self._recent_messages: list[dict] = []
@@ -293,6 +323,7 @@ class MemoryManager:
                 self.store.register_observer(self._on_store_event)
             # Load existing memories
             self._load_memories()
+            self._align_desktop_owner()
             self._maybe_schedule_snapshot()
         except MemoryStorageUnavailable as e:
             from .noop_store import NoopRetrievalEngine, NoopUnifiedStore
@@ -337,6 +368,36 @@ class MemoryManager:
                     repair="memory_repair_flow" if key == "memory" else "manual_quarantine",
                     details=e.details or None,
                 )
+
+    def _align_desktop_owner(self) -> None:
+        """Repair only a local desktop main store, before background work starts."""
+        self._desktop_owner_aligned = False
+        if not self._desktop_owner_alignment_requested or not os.environ.get(
+            "OPENAKITA_DESKTOP_SESSION_TOKEN"
+        ):
+            return
+        from .owner_migration import align_desktop_owner
+
+        try:
+            # Agent construction may create several managers over this shared
+            # DB. Only the first one may migrate; later constructors can run
+            # while the original manager is already serving requests.
+            storage = self.store.db
+            with storage._lock:
+                report = storage._desktop_owner_alignment_report
+                if report is None:
+                    report = align_desktop_owner(storage)
+                    storage._desktop_owner_alignment_report = report
+            self._desktop_owner_aligned = report["status"] in {"clean", "migrated"}
+            if report["status"] == "migrated":
+                self._reload_from_sqlite()
+            logger.info("[Memory] Desktop owner alignment: %s", report)
+        except Exception:
+            # A failed backup/migration must leave the original data usable.
+            # Retry on next startup. New implicit desktop sessions still use
+            # desktop_user; explicit owners are never silently rewritten.
+            self.store.db._desktop_owner_alignment_report = {"status": "failed"}
+            logger.exception("[Memory] Desktop owner alignment failed; keeping original owners")
 
     def _on_store_event(self, kind: str, payload: Any) -> None:
         """Observer mirror for ``UnifiedStore`` semantic writes.
@@ -606,6 +667,7 @@ class MemoryManager:
         focus_terms: list[str] | None = None,
     ) -> None:
         self._current_session_id = session_id
+        self._relational_pending_nodes = []
         if user_id is not _UNSET_OWNER:
             self._current_user_id = str(user_id).strip() if user_id else "anonymous"
         if workspace_id is not _UNSET_OWNER:
@@ -809,6 +871,10 @@ class MemoryManager:
         write_scope, write_owner = self._current_write_scope()
         if scope:
             write_scope = "user" if scope == "global" else scope
+            if write_scope != "session":
+                # An explicit cross-session scope must not inherit the active
+                # session's scope_owner, which the panel/recall cannot see.
+                write_owner = ""
         if scope_owner is not None:
             write_owner = scope_owner
         if write_scope == "system":
@@ -1594,6 +1660,21 @@ class MemoryManager:
 
     # ==================== Relational Memory (Mode 2) ====================
 
+    def _save_relational_encoding(
+        self, result, *, user_id: str, workspace_id: str, session_id: str
+    ) -> None:
+        """Stamp every encoding layer with its captured, trusted session owner."""
+        for node in result.nodes:
+            node.user_id = user_id
+            node.workspace_id = workspace_id
+            node.session_id = session_id
+            if self.agent_id and not node.agent_id:
+                node.agent_id = self.agent_id
+        if result.nodes:
+            self.relational_store.save_nodes_batch(result.nodes)
+        if result.edges:
+            self.relational_store.save_edges_batch(result.edges)
+
     def _ensure_relational(self) -> bool:
         """Lazily initialize relational memory components. Returns True if available."""
         if self.relational_store is not None:
@@ -1659,6 +1740,7 @@ class MemoryManager:
                         loop_for_backends.create_task(end())
 
         session_id = self._current_session_id
+        session_user, session_workspace = self._current_owner()
         turns = list(self._session_turns)
         cited = self._consume_cited_memories()
 
@@ -1787,13 +1869,12 @@ class MemoryManager:
                             existing_nodes=existing or None,
                             session_id=session_id,
                         )
-                        if result.nodes:
-                            for n in result.nodes:
-                                if self.agent_id and not n.agent_id:
-                                    n.agent_id = self.agent_id
-                            self.relational_store.save_nodes_batch(result.nodes)
-                        if result.edges:
-                            self.relational_store.save_edges_batch(result.edges)
+                        self._save_relational_encoding(
+                            result,
+                            user_id=session_user,
+                            workspace_id=session_workspace,
+                            session_id=session_id,
+                        )
                         if result.nodes or result.edges:
                             logger.info(
                                 f"[Memory] Relational encoding: "
@@ -1936,18 +2017,14 @@ class MemoryManager:
                 result = self.relational_encoder.encode_quick(
                     messages, self._current_session_id or ""
                 )
+                self._save_relational_encoding(
+                    result,
+                    user_id=write_user,
+                    workspace_id=write_workspace,
+                    session_id=self._current_session_id or "",
+                )
                 if result.nodes:
-                    for n in result.nodes:
-                        if self.agent_id and not n.agent_id:
-                            n.agent_id = self.agent_id
-                        if not getattr(n, "user_id", "") or n.user_id == "default":
-                            n.user_id = write_user
-                        if not getattr(n, "workspace_id", "") or n.workspace_id == "default":
-                            n.workspace_id = write_workspace
-                    self.relational_store.save_nodes_batch(result.nodes)
                     self._relational_pending_nodes.extend(result.nodes)
-                if result.edges:
-                    self.relational_store.save_edges_batch(result.edges)
                 if result.nodes:
                     logger.info(
                         f"[Memory] Relational quick encode: "
@@ -1996,13 +2073,13 @@ class MemoryManager:
             return
         try:
             result = self.relational_encoder.backfill_from_summary(summary, pending)
-            if result.nodes:
-                for n in result.nodes:
-                    if self.agent_id and not n.agent_id:
-                        n.agent_id = self.agent_id
-                self.relational_store.save_nodes_batch(result.nodes)
-            if result.edges:
-                self.relational_store.save_edges_batch(result.edges)
+            user_id, workspace_id = self._current_owner()
+            self._save_relational_encoding(
+                result,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                session_id=self._current_session_id or "",
+            )
             if result.nodes or result.edges:
                 logger.info(
                     f"[Memory] Relational backfill from summary: "

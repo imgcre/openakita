@@ -98,6 +98,7 @@ class MemoryStorage:
         self._conn: sqlite3.Connection | None = None
         self._write_lock = threading.RLock()
         self._lock = self._write_lock  # backward compat alias
+        self._desktop_owner_alignment_report: dict[str, Any] | None = None
         self._init_db()
         if _register:
             key = str(self._db_path.resolve())

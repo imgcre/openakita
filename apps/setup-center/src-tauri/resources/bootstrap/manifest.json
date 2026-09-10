@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
   "app_name": "openakita",
-  "app_version": "1.27.32",
+  "app_version": "1.27.40",
   "python_version": "3.11",
   "python_abi": "cp311",
   "wheel_tag": "py3-none-any",
   "wheel": {
-    "name": "wheels/openakita-1.27.32-py3-none-any.whl",
-    "sha256": "f256792375d457ec722a7710ba6e4872c898b63d3f09f1a700ecb36e207948ff"
+    "name": "wheels/openakita-1.27.40-py3-none-any.whl",
+    "sha256": "702f4c931ff72d6b7ca3e40f83fb789142b6eb738c6663401a2daf4e1069f3f9"
   },
   "uv": {
     "path": "bin/uv.exe",
     "windows_path": "bin/uv.exe",
     "version": "0.11.13",
-    "sha256": "23cf0f8194ff576562646a1a2950c6826249c8806cd1547debd24db77eb68f58"
+    "sha256": "97d32ea028fb68915fc8112d68c380b98a808f8eab86e7b1cb3542746de3ef26"
   },
   "python_seed": {
     "packaged": true,

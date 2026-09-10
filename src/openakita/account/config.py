@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 ACCOUNT_MODES = {"openakita", "custom", "disabled"}
@@ -133,6 +134,12 @@ class AccountFeatureConfig:
             "display_name": self.display_name,
             "supports_entitlements": self.enabled,
         }
+
+    def identity_data_dir(self) -> Path:
+        """Identity follows the OS credential, never a project or workspace."""
+        scope = f"{self.base_url}\0{self.client_id}\0{self.credential_username}"
+        namespace = hashlib.sha256(scope.encode()).hexdigest()[:24]
+        return Path.home() / ".openakita" / "account" / namespace
 
 
 def disabled_credential_usernames(

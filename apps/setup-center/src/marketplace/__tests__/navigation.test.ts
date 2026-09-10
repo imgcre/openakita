@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildMarketplaceContextUrl,
   buildMarketplaceContextUrlFromDeepLink,
+  buildMarketplaceHandoffUrl,
   hasMarketplaceClientVersion,
   marketplaceDeepLinkAction,
   normalizeMarketplaceClientVersion,
@@ -38,6 +39,35 @@ describe("Marketplace navigation", () => {
     expect(result.searchParams.get("version")).toBe("1.27.40");
     expect(result.searchParams.get("next")).toBe("/resources/example?tab=versions#versions");
   });
+
+  it("opens a restricted handoff before storing client context without leaking the ticket into it", () => {
+    const handoff = new URL(buildMarketplaceHandoffUrl("v1.27.40-beta.1", "t".repeat(64)));
+    expect(handoff.origin).toBe("https://marketplace.openakita.cn");
+    expect(handoff.pathname).toBe("/auth/desktop");
+    expect(handoff.searchParams.get("ticket")).toBe("t".repeat(64));
+    const context = new URL(handoff.searchParams.get("next")!, handoff.origin);
+    expect(context.pathname).toBe("/openakita/context");
+    expect(context.searchParams.get("version")).toBe("1.27.40");
+    expect(context.searchParams.get("next")).toBe("/");
+    expect(context.searchParams.has("ticket")).toBe(false);
+  });
+
+  it("preserves a detail destination through both redirects on a configured origin", () => {
+    const next = "/resources/example?tab=versions&sort=newest#versions";
+    const handoff = new URL(buildMarketplaceHandoffUrl("1.27.40", "t".repeat(64), next, "http://localhost:3001"));
+    expect(handoff.origin).toBe("http://localhost:3001");
+    const context = new URL(handoff.searchParams.get("next")!, handoff.origin);
+    expect(context.searchParams.get("next")).toBe(next);
+  });
+
+  it.each(["https://evil.example/", "//evil.example/", "/\\evil.example/", "/openakita/context?version=1.0.0"])(
+    "sanitizes the post-login destination %s",
+    (next) => {
+      const handoff = new URL(buildMarketplaceHandoffUrl("1.27.40", "t".repeat(64), next));
+      const context = new URL(handoff.searchParams.get("next")!, handoff.origin);
+      expect(context.searchParams.get("next")).toBe("/");
+    },
+  );
 
   it("allows a configured Marketplace origin and local development origins", () => {
     const configured = "https://market.example.com";

@@ -779,7 +779,7 @@ def create_app(
     app.state.account_config = account_config
     app.state.account_capability = account_config.capability()
     if account_config.enabled:
-        account_status_store = AccountStatusStore(data_dir)
+        account_status_store = AccountStatusStore(account_config.identity_data_dir())
         app.state.account_status_store = account_status_store
         app.state.account_oidc_manager = AccountOIDCManager(
             store=account_status_store,

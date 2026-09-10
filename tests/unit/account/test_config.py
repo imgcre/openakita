@@ -14,7 +14,7 @@ def test_account_feature_defaults_to_official_provider() -> None:
 
     assert config.mode == "openakita"
     assert config.enabled is True
-    assert config.base_url == DEFAULT_ACCOUNT_BASE_URL
+    assert config.base_url == DEFAULT_ACCOUNT_BASE_URL == "https://account.openakita.cn"
     assert config.client_id == DEFAULT_ACCOUNT_CLIENT_ID
     assert config.credential_username == DEFAULT_CREDENTIAL_USERNAME
     assert config.capability()["provider"] == "openakita"

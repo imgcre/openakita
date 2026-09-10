@@ -34,7 +34,7 @@ async def test_native_pkce_never_listens_on_backend_loopback(redirect, monkeypat
     )
     assert all(result["status"] == "complete" for result in results)
     manager._complete.assert_awaited_once_with(
-        code="code", verifier=verifier, redirect_uri=redirect
+        code="code", verifier=verifier, redirect_uri=redirect, generation=attempt.generation
     )
     assert not attempt.verifier
     listener.assert_not_awaited()

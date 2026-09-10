@@ -19,7 +19,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { LogOut, Square, ClipboardCopy, Compass, Store } from "lucide-react";
 import { toast } from "sonner";
 import { openExternalUrl } from "../platform";
-import { marketplaceOpenErrorKey, openMarketplace as launchMarketplace } from "../marketplace/mobile";
+import { marketplaceOpenErrorKey, openMarketplaceWithAccount } from "../marketplace/open";
 import { copyToClipboard } from "../utils/clipboard";
 import { RemoteAccessDialog } from "./RemoteAccessDialog";
 import { InboxBadge } from "./InboxBadge";
@@ -80,14 +80,19 @@ export function Topbar({
   const { t } = useTranslation();
   const [remoteCopyState, setRemoteCopyState] = useState<"idle" | "copied" | "no_ip">("idle");
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
+  const [marketplaceOpening, setMarketplaceOpening] = useState(false);
 
   const hasRemoteAccessProps = !!(envDraft && setEnvDraft && restartService && askConfirm);
 
   const openMarketplace = async () => {
+    if (marketplaceOpening) return;
+    setMarketplaceOpening(true);
     try {
-      await launchMarketplace(desktopVersion);
+      await openMarketplaceWithAccount(desktopVersion, apiBaseUrl);
     } catch (error) {
       toast.error(t(marketplaceOpenErrorKey(error)));
+    } finally {
+      setMarketplaceOpening(false);
     }
   };
 
@@ -410,6 +415,7 @@ export function Topbar({
                 variant="ghost"
                 size="icon-sm"
                 onClick={() => { void openMarketplace(); }}
+                disabled={marketplaceOpening}
                 aria-label={t("topbar.openMarketplace")}
               >
                 <Store size={16} />

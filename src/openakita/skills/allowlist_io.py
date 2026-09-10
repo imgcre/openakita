@@ -113,24 +113,28 @@ def overwrite_allowlist(allowlist: set[str] | None) -> Path:
     return path
 
 
-def upsert_skill_ids(skill_ids: set[str]) -> Path | None:
+def upsert_skill_ids(
+    skill_ids: set[str], *, default_allowlist: set[str] | None = None,
+) -> Path | None:
     """原子地把给定 skill_ids 合并进现有 allowlist。
 
     - 当 skills.json 不存在时：**不**创建新文件，返回 ``None``
       （语义保持“未声明 allowlist = 全部启用”）；此时新装技能已经默认启用，无需写盘。
     - 当 skills.json 存在但没有 external_allowlist 字段时：与上同义，返回 ``None``。
     - 当 skills.json 已有 external_allowlist：把 skill_ids 合并后原子写回。
+    - default_allowlist 可用于显式启用默认禁用的技能：仅当无显式名单时，
+      以调用方提供的当前默认启用集合为基底；已有用户名单始终优先。
     """
     if not skill_ids:
         return None
 
     with _WRITE_LOCK:
         path = _skills_json_path()
-        if not path.exists():
+        if not path.exists() and default_allowlist is None:
             return None
 
         try:
-            raw = path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8") if path.exists() else "{}"
             cfg = json.loads(raw) if raw.strip() else {}
         except Exception as e:
             logger.warning("skills.json unreadable, skip upsert: %s", e)
@@ -138,7 +142,9 @@ def upsert_skill_ids(skill_ids: set[str]) -> Path | None:
 
         current = cfg.get("external_allowlist", None)
         if not isinstance(current, list):
-            return None
+            if default_allowlist is None:
+                return None
+            current = list(default_allowlist)
 
         merged = {str(x).strip() for x in current if str(x).strip()} | {
             s.strip() for s in skill_ids if s and s.strip()

@@ -633,6 +633,8 @@ class Brain:
                 conversation_id=conversation_id,
                 cancel_event=cancel_event,
                 extra_params=extra_params,
+                endpoint_name=kwargs.get("endpoint_name"),
+                endpoint_policy=kwargs.get("endpoint_policy"),
             )
             _choices = getattr(response, "choices", None) or []
             _content = getattr(response, "content", None) or []
@@ -711,6 +713,8 @@ class Brain:
                 thinking_depth=thinking_depth,
                 conversation_id=conversation_id,
                 extra_params=extra_params,
+                endpoint_name=kwargs.get("endpoint_name"),
+                endpoint_policy=kwargs.get("endpoint_policy"),
             ):
                 yield event
         finally:

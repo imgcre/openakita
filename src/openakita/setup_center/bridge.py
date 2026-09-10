@@ -1843,6 +1843,9 @@ def uninstall_skill(workspace_dir: str, skill_name: str) -> None:
     skills_dir = _resolve_skills_dir(workspace_dir)
     target = (skills_dir / skill_name).resolve()
 
+    if target == skills_dir.resolve():
+        raise ValueError("不允许删除技能根目录")
+
     if not target.exists():
         raise ValueError(f"技能不存在: {skill_name}")
 

@@ -1,3 +1,5 @@
+import { permLabel, levelLabel } from "../plugins/permissions";
+import { usePluginChanges } from "../hooks/usePluginChanges";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import ReactMarkdown from "react-markdown";
@@ -107,50 +109,6 @@ interface ConfigSchema {
   type?: string;
   properties?: Record<string, ConfigProp>;
   required?: string[];
-}
-
-const PERM_LABELS: Record<string, { zh: string; en: string }> = {
-  "tools.register":      { zh: "注册工具",     en: "Register Tools" },
-  "hooks.basic":         { zh: "基础钩子",     en: "Basic Hooks" },
-  "hooks.message":       { zh: "消息钩子",     en: "Message Hooks" },
-  "hooks.retrieve":      { zh: "检索钩子",     en: "Retrieval Hooks" },
-  "hooks.all":           { zh: "所有钩子",     en: "All Hooks" },
-  "config.read":         { zh: "读取配置",     en: "Read Config" },
-  "config.write":        { zh: "写入配置",     en: "Write Config" },
-  "data.own":            { zh: "数据存储",     en: "Data Storage" },
-  "log":                 { zh: "日志",         en: "Logging" },
-  "skill":               { zh: "技能",         en: "Skill" },
-  "memory.read":         { zh: "读取记忆",     en: "Read Memory" },
-  "memory.write":        { zh: "写入记忆",     en: "Write Memory" },
-  "memory.replace":      { zh: "替换记忆",     en: "Replace Memory" },
-  "channel.register":    { zh: "注册通道",     en: "Register Channel" },
-  "channel.send":        { zh: "发送消息",     en: "Send Messages" },
-  "retrieval.register":  { zh: "注册检索源",   en: "Register Retrieval" },
-  "search.register":     { zh: "注册搜索后端", en: "Register Search" },
-  "routes.register":     { zh: "注册 API 路由", en: "Register API Routes" },
-  "brain.access":        { zh: "访问 Brain",   en: "Access Brain" },
-  "vector.access":       { zh: "访问向量库",   en: "Access Vector Store" },
-  "settings.read":       { zh: "读取设置",     en: "Read Settings" },
-  "llm.register":        { zh: "注册 LLM 服务", en: "Register LLM" },
-  "system.config.write": { zh: "系统配置写入", en: "System Config Write" },
-};
-
-const LEVEL_LABELS: Record<string, { zh: string; en: string }> = {
-  basic:    { zh: "基础", en: "basic" },
-  advanced: { zh: "高级", en: "advanced" },
-  system:   { zh: "系统", en: "system" },
-};
-
-function permLabel(perm: string, lang: string): string {
-  const entry = PERM_LABELS[perm];
-  if (!entry) return perm;
-  return lang.startsWith("zh") ? entry.zh : entry.en;
-}
-
-function levelLabel(level: string, lang: string): string {
-  const entry = LEVEL_LABELS[level];
-  if (!entry) return level;
-  return lang.startsWith("zh") ? entry.zh : entry.en;
 }
 
 const CATEGORY_LABELS: Record<string, { zh: string; en: string }> = {
@@ -329,8 +287,11 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
   };
 
   const refreshRef = useRef<() => Promise<void>>();
+  const listSignature = useRef("");
+  const listRequest = useRef(0);
 
   const fetchPlugins = useCallback(async (showSpinner: boolean) => {
+    const request = ++listRequest.current;
     if (showSpinner) setLoading(true);
     setError("");
     setNotAvailable(false);
@@ -338,9 +299,18 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
       const resp = await safeFetch(`${apiBaseRef.current()}/api/plugins/list`);
       const raw = await resp.json();
       const data: PluginListResponse = raw.data ?? raw;
+      if (request !== listRequest.current) return;
+      const signature = JSON.stringify(data);
+      if (signature !== listSignature.current) {
+        listSignature.current = signature;
+        window.dispatchEvent(new CustomEvent("openakita:plugin-apps-changed", {
+          detail: { source: "plugin-list" },
+        }));
+      }
       setPlugins(data.plugins || []);
       setFailed(data.failed || {});
     } catch (e: any) {
+      if (request !== listRequest.current) return;
       const msg = e.message || "";
       if (msg.includes("404") || msg.includes("Not Found") || msg.includes("Failed to fetch")) {
         setNotAvailable(true);
@@ -348,11 +318,12 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
         setError(msg || t("plugins.failedToLoad"));
       }
     } finally {
-      setLoading(false);
+      if (request === listRequest.current) setLoading(false);
     }
   }, [t]);
 
   refreshRef.current = () => fetchPlugins(false);
+  usePluginChanges(visible, () => fetchPlugins(false));
 
   const fetchDevMode = useCallback(async () => {
     try {
@@ -370,7 +341,6 @@ export default function PluginManagerView({ visible, httpApiBase }: Props) {
   useEffect(() => {
     if (visible && !mountedRef.current) {
       mountedRef.current = true;
-      fetchPlugins(true);
       fetchDevMode();
     }
   }, [visible, fetchPlugins, fetchDevMode]);

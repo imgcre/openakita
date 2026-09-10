@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -35,9 +36,11 @@ TERMINAL_STATUSES = frozenset({"installed", "failed", "cancelled"})
 
 
 class MarketplaceInstallError(RuntimeError):
-    def __init__(self, code: str, message: str = "") -> None:
+    def __init__(self, code: str, message: str = "", *, reason: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+        self.detail = message
+        self.reason = reason
 
 
 def validate_marketplace_endpoint(value: str) -> str:
@@ -171,35 +174,27 @@ class MarketplaceInstallManager:
     @staticmethod
     def _public(job: dict[str, Any]) -> dict[str, Any]:
         hidden = {"token", "download_url", "signature", "verification"}
-        return {key: value for key, value in job.items() if key not in hidden}
+        result = {
+            key: value for key, value in job.items()
+            if key not in hidden and not key.startswith("_installation_")
+        }
+        if job.get("started_at") and job["status"] in {"downloading", "verifying", "installing"}:
+            result["elapsed_seconds"] = max(0, int(time.time() - job["started_at"]))
+        return result
 
-    async def _authorize(self, token: str, endpoint: str, request: Any, *, confirm: bool = False) -> dict:
-        from openakita.account.oidc import AccountOIDCError
+    @staticmethod
+    async def _inspect(job: dict[str, Any]) -> dict[str, Any]:
+        from .installed import inspect_installation
 
-        account = getattr(request.app.state, "account_oidc_manager", None)
-        if account is None:
-            raise MarketplaceInstallError("marketplace_account_required")
-        try:
-            proof = await account.marketplace_install_proof(token, self.device_id)
-        except AccountOIDCError as exc:
-            raise MarketplaceInstallError(str(exc)) from exc
-        action = "authorize" if confirm else "consume"
-        try:
-            async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
-                response = await client.post(
-                    f"{endpoint}/api/internal/openakita/install-instructions/{action}",
-                    json={"token": token, "device_id": self.device_id, "account_proof": proof},
-                )
-        except httpx.HTTPError as exc:
-            raise MarketplaceInstallError("marketplace_connection_failed") from exc
-        if response.status_code != 200:
-            errors = {401: "marketplace_account_required", 403: "marketplace_account_mismatch",
-                      404: "marketplace_instruction_unavailable", 409: "marketplace_instruction_unavailable",
-                      503: "marketplace_identity_unavailable"}
-            raise MarketplaceInstallError(errors.get(response.status_code, "marketplace_connection_failed"))
-        return response.json().get("data") or {}
+        return await asyncio.to_thread(inspect_installation, job)
 
-    async def prepare(self, token: str, endpoint: str, request: Any) -> dict[str, Any]:
+    async def _already_installed(self, job: dict[str, Any]) -> None:
+        job.update(status="installed", progress=100, already_installed=True, report_pending=True)
+        job["restart_required"] = job.get("installed_pending_restart", False)
+        self._write(job)
+        await self._flush_terminal_report(job)
+
+    async def prepare(self, token: str, endpoint: str, *, account=None) -> dict[str, Any]:
         token = (token or "").strip().lower()
         if not TOKEN_RE.fullmatch(token):
             raise MarketplaceInstallError("marketplace_instruction_invalid")
@@ -207,8 +202,14 @@ class MarketplaceInstallManager:
         async with self._lock:
             for existing in self._jobs.values():
                 if existing.get("token") == token and existing.get("endpoint") == endpoint:
+                    await self._authorize(token, endpoint, account, confirm=True)
+                    if existing.get("status") == "ready":
+                        existing.update(await self._inspect(existing))
+                        self._write(existing)
+                        if existing["install_action"] == "already_installed":
+                            await self._already_installed(existing)
                     return self._public(existing)
-            payload = await self._authorize(token, endpoint, request)
+            payload = await self._authorize(token, endpoint, account)
             self._validate_instruction(payload)
             job_id = str(payload["id"])
             job = {
@@ -220,6 +221,7 @@ class MarketplaceInstallManager:
                 "resource_id": payload["resource_id"],
                 "resource_name": payload["resource_name"],
                 "resource_slug": payload["resource_slug"],
+                "resource_category": payload.get("resource_category"),
                 "resource_type": payload["resource_type"],
                 "version_id": payload["version_id"],
                 "version": payload["version"],
@@ -232,28 +234,87 @@ class MarketplaceInstallManager:
                 "dependencies": payload.get("dependencies") or [],
                 "verification": payload["verification"],
                 "failure_code": "",
+                "account_user_id": payload.get("user_id", ""),
             }
+            job.update(await self._inspect(job))
             self._jobs[job_id] = job
             self._write(job)
+            if job["install_action"] == "already_installed":
+                await self._already_installed(job)
             return self._public(job)
+
+    async def _authorize(
+        self,
+        token: str,
+        endpoint: str,
+        account,
+        *,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        from openakita.account.oidc import AccountOIDCError
+
+        if account is None:
+            raise MarketplaceInstallError("marketplace_account_required")
+        try:
+            proof = await account.marketplace_install_proof(token, self.device_id)
+        except AccountOIDCError as exc:
+            code = (
+                "marketplace_account_required"
+                if str(exc) == "marketplace_account_required"
+                else "marketplace_account_authorization_failed"
+            )
+            raise MarketplaceInstallError(code) from exc
+        action = "authorize" if confirm else "consume"
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+                response = await client.post(
+                    f"{endpoint}/api/internal/openakita/install-instructions/{action}",
+                    json={"token": token, "device_id": self.device_id, "account_proof": proof},
+                )
+        except httpx.HTTPError as exc:
+            raise MarketplaceInstallError("marketplace_connection_failed") from exc
+        if response.status_code == 401:
+            raise MarketplaceInstallError("marketplace_account_required")
+        if response.status_code == 403:
+            raise MarketplaceInstallError("marketplace_account_mismatch")
+        if response.status_code in (404, 409):
+            raise MarketplaceInstallError("marketplace_instruction_unavailable")
+        if response.status_code != 200:
+            raise MarketplaceInstallError("marketplace_connection_failed")
+        return response.json().get("data") or {}
 
     @staticmethod
     def _validate_instruction(payload: dict[str, Any]) -> None:
         required = (
-            "id", "resource_id", "resource_name", "resource_slug", "resource_type", "version_id", "version",
-            "digest_sha256", "signature", "size_bytes", "download_url", "verification",
+            "id",
+            "resource_id",
+            "resource_name",
+            "resource_slug",
+            "resource_type",
+            "version_id",
+            "version",
+            "digest_sha256",
+            "signature",
+            "size_bytes",
+            "download_url",
+            "verification",
         )
         if any(not payload.get(key) for key in required):
             raise MarketplaceInstallError("marketplace_instruction_invalid")
         if payload["resource_type"] not in RESOURCE_TYPES:
             raise MarketplaceInstallError("marketplace_resource_unsupported")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,119}", str(payload["resource_slug"])):
+            raise MarketplaceInstallError("marketplace_instruction_invalid")
         if not re.fullmatch(r"[a-fA-F0-9]{64}", str(payload["digest_sha256"])):
             raise MarketplaceInstallError("marketplace_instruction_invalid")
         verification = payload.get("verification") or {}
-        if verification.get("algorithm") != "Ed25519" or verification.get("digest_algorithm") != "SHA-256":
+        if (
+            verification.get("algorithm") != "Ed25519"
+            or verification.get("digest_algorithm") != "SHA-256"
+        ):
             raise MarketplaceInstallError("marketplace_signature_unsupported")
 
-    async def confirm(self, job_id: str, request: Any) -> dict[str, Any]:
+    async def confirm(self, job_id: str, request: Any, *, account=None) -> dict[str, Any]:
         async with self._lock:
             job = self._jobs.get(job_id)
             if not job:
@@ -262,11 +323,32 @@ class MarketplaceInstallManager:
                 return self._public(job)
             if job.get("status") != "ready":
                 raise MarketplaceInstallError("marketplace_install_busy")
-            # Recheck the current account and entitlement after the preview;
-            # neither a cached proof nor the preview authorizes an installation.
-            await self._authorize(job["token"], job["endpoint"], request, confirm=True)
+            # Use a fresh scoped proof after the preview, so switching account
+            # cannot authorize installation using the previous user's entitlement.
+            await self._authorize(job["token"], job["endpoint"], account, confirm=True)
+            current = await self._inspect(job)
+            changed = current["_installation_snapshot"] != job.get("_installation_snapshot")
+            job.update(current)
+            if job["install_action"] == "already_installed":
+                await self._already_installed(job)
+                return self._public(job)
+            if changed or job["install_action"] == "downgrade":
+                # Return the updated preview. A second click is required to
+                # approve a different upgrade/replacement than the one displayed.
+                self._write(job)
+                return self._public(job)
+            for other in self._jobs.values():
+                if (
+                    other["id"] != job_id
+                    and other.get("status") in {"downloading", "verifying", "installing"}
+                    and other.get("_installation_scope") == job["_installation_scope"]
+                    and (other.get("resource_id") == job["resource_id"]
+                         or other.get("resource_slug") == job["resource_slug"])
+                ):
+                    raise MarketplaceInstallError("marketplace_install_busy")
             job["status"] = "downloading"
-            job["progress"] = 5
+            job.update(progress=0, stage="downloading", downloaded_bytes=0,
+                       started_at=time.time(), elapsed_seconds=0, current_dependency="")
             job["failure_code"] = ""
             self._write(job)
             task = asyncio.create_task(self._run(job_id, request))
@@ -307,35 +389,53 @@ class MarketplaceInstallManager:
             await self._report(job, "downloading")
             await self._download(job, package_path)
             job["status"] = "verifying"
-            job["progress"] = 45
+            job.update(progress=None, stage="verifying")
             self._write(job)
-            self._verify(job, package_path)
+            await asyncio.to_thread(self._verify, job, package_path)
             job["status"] = "installing"
-            job["progress"] = 70
+            job.update(progress=None, stage="installing")
             self._write(job)
             await self._report(job, "installing")
-            job["restart_required"] = await self._install(job, package_path, request)
+            async with self._lock:
+                current = await self._inspect(job)
+                if current["_installation_snapshot"] != job.get("_installation_snapshot"):
+                    raise MarketplaceInstallError("marketplace_install_state_changed")
+                job["restart_required"] = await self._install(job, package_path, request)
             token = job.get("token", "")
             job["status"] = "installed"
             job["progress"] = 100
+            job.update(stage="installed", current_dependency="",
+                       elapsed_seconds=max(0, int(time.time() - job["started_at"])))
             job["failure_code"] = ""
             job["token"] = token
             job["report_pending"] = True
             self._write(job)
             await self._flush_terminal_report(job)
         except MarketplaceInstallError as exc:
-            await self._fail(job, exc.code)
-        except Exception:
+            await self._fail(job, exc.code, detail=exc.detail, reason=exc.reason)
+        except Exception as exc:
             logger.exception("Marketplace installation failed for %s", job_id)
-            await self._fail(job, "marketplace_install_failed")
+            await self._fail(job, "marketplace_install_failed",
+                             detail=f"{type(exc).__name__}: {exc}")
         finally:
             self._tasks.pop(job_id, None)
             package_path.unlink(missing_ok=True)
 
-    async def _fail(self, job: dict[str, Any], code: str) -> None:
+    async def _fail(
+        self, job: dict[str, Any], code: str, *, detail: str = "", reason: str = "",
+    ) -> None:
+        from openakita.plugins.installer import safe_install_error
+
         token = job.get("token", "")
         job["status"] = "failed"
+        if job.get("started_at"):
+            job["elapsed_seconds"] = max(0, int(time.time() - job["started_at"]))
         job["failure_code"] = code
+        job["failure_detail"] = safe_install_error(detail)
+        job["failure_reason"] = reason
+        job["failure_stage"] = job.get("stage", "")
+        logger.error("Marketplace install %s failed (%s): %s", job["id"], code,
+                     job["failure_detail"] or code)
         job["report_pending"] = bool(token)
         self._write(job)
         if token:
@@ -350,7 +450,13 @@ class MarketplaceInstallManager:
             extra = {"signature_verified": True, "compatibility_verified": True}
         elif status == "failed":
             extra = {"failure_code": job.get("failure_code") or "marketplace_install_failed"}
-        if await self._report(job, status, **extra):
+        reported = await self._report(job, status, **extra)
+        if not reported and status == "installed" and job.get("already_installed"):
+            # The server requires claimed -> installing -> installed. Try the
+            # terminal report first so retries also handle an already accepted ACK.
+            if await self._report(job, "installing"):
+                reported = await self._report(job, status, **extra)
+        if reported:
             job["report_pending"] = False
             job.pop("token", None)
             job.pop("download_url", None)
@@ -371,7 +477,8 @@ class MarketplaceInstallManager:
                             if written > expected or written > 512 * 1024 * 1024:
                                 raise MarketplaceInstallError("marketplace_package_size_mismatch")
                             output.write(chunk)
-                            job["progress"] = min(40, 5 + int(35 * written / expected))
+                            job["downloaded_bytes"] = written
+                            job["progress"] = min(100, int(100 * written / expected))
                     if written != expected:
                         raise MarketplaceInstallError("marketplace_package_size_mismatch")
         except httpx.HTTPError as exc:
@@ -388,7 +495,9 @@ class MarketplaceInstallManager:
             raise MarketplaceInstallError("marketplace_digest_mismatch")
         contract = job["verification"]
         try:
-            public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(contract["public_key"]))
+            public_key = Ed25519PublicKey.from_public_bytes(
+                base64.b64decode(contract["public_key"])
+            )
             signature = base64.b64decode(job["signature"])
             message = (
                 f"sha256:{digest.lower()}\nresource:{job['resource_id']}\nversion:{job['version']}"
@@ -410,7 +519,10 @@ class MarketplaceInstallManager:
             raise MarketplaceInstallError("marketplace_manifest_invalid") from exc
         if not isinstance(manifest, dict):
             raise MarketplaceInstallError("marketplace_manifest_invalid")
-        if manifest.get("resource_id") != job["resource_id"] or manifest.get("version") != job["version"]:
+        if (
+            manifest.get("resource_id") != job["resource_id"]
+            or manifest.get("version") != job["version"]
+        ):
             raise MarketplaceInstallError("marketplace_manifest_mismatch")
         if manifest.get("resource_type") != job["resource_type"]:
             raise MarketplaceInstallError("marketplace_manifest_mismatch")
@@ -430,14 +542,23 @@ class MarketplaceInstallManager:
         temp_root = Path(tempfile.mkdtemp(prefix="openakita-marketplace-"))
         try:
             extracted = temp_root / "content"
+            job["stage"] = "extracting"
             await asyncio.to_thread(_safe_extract, package_path, extracted)
             source = _package_root(extracted)
             kind = job["resource_type"]
             if kind == "plugin":
-                return await self._install_plugin(source, request)
+                return await self._install_plugin(source, request, job=job)
             elif kind == "skill":
-                await self._install_skill(source, job["resource_slug"], request)
+                job["stage"] = "installing"
+                enabled, restart_required = await self._install_skill(
+                    source, job["resource_slug"], request,
+                    resource_category=job.get("resource_category"),
+                    marketplace_manifest=read_json_safe(source / "manifest.json"),
+                )
+                job["skill_enabled"] = enabled
+                return restart_required
             elif kind == "mcp":
+                job["stage"] = "installing"
                 await self._install_mcp(source, request)
             else:
                 raise MarketplaceInstallError("marketplace_resource_unsupported")
@@ -446,7 +567,9 @@ class MarketplaceInstallManager:
             shutil.rmtree(temp_root, ignore_errors=True)
 
     @staticmethod
-    async def _install_plugin(source: Path, request: Any) -> bool:
+    async def _install_plugin(
+        source: Path, request: Any, *, job: dict[str, Any] | None = None
+    ) -> bool:
         from openakita.api.routes.plugins import (
             InstallProgress,
             _do_install,
@@ -454,18 +577,50 @@ class MarketplaceInstallManager:
             _plugins_dir,
         )
 
+        progress = InstallProgress()
+        progress.update("installing", "正在安装插件")
+
+        async def relay() -> None:
+            while True:
+                snapshot = progress.snapshot()
+                if job is not None:
+                    job.update(stage=snapshot["stage"],
+                               current_dependency=snapshot.get("dependency", ""))
+                await asyncio.sleep(0.1)
+
+        relay_task = asyncio.create_task(relay())
         try:
-            progress = InstallProgress()
             plugin_id, hot_loaded = await _do_install(
                 str(source), _plugins_dir(), progress, request
             )
+            if job is not None:
+                job["plugin_id"] = plugin_id
             _finalize_plugin_install(request, progress, plugin_id, hot_loaded)
             return not hot_loaded
         except Exception as exc:
-            raise MarketplaceInstallError("marketplace_plugin_install_failed") from exc
+            from openakita.plugins.installer import PluginInstallError, safe_install_error
+
+            snapshot = progress.snapshot()
+            if job is not None:
+                job.update(stage=snapshot["stage"],
+                           current_dependency=snapshot.get("dependency", ""))
+            reason = exc.reason if isinstance(exc, PluginInstallError) else ""
+            detail = str(exc) if isinstance(exc, PluginInstallError) else f"{type(exc).__name__}: {exc}"
+            raise MarketplaceInstallError(
+                "marketplace_plugin_install_failed", safe_install_error(detail), reason=reason,
+            ) from exc
+        finally:
+            relay_task.cancel()
+            try:
+                await relay_task
+            except asyncio.CancelledError:
+                pass
 
     @staticmethod
-    async def _install_skill(source: Path, resource_slug: str, request: Any) -> None:
+    async def _install_skill(
+        source: Path, resource_slug: str, request: Any, *, resource_category: Any = None,
+        marketplace_manifest: dict[str, Any] | None = None,
+    ) -> tuple[bool, bool]:
         skill_source = source
         if not (skill_source / "SKILL.md").is_file():
             candidates = list(skill_source.rglob("SKILL.md"))
@@ -477,15 +632,31 @@ class MarketplaceInstallManager:
         skills_root = settings.skills_path
         skills_root.mkdir(parents=True, exist_ok=True)
         target = skills_root / resource_slug
+        first_install = not target.exists()
         staging = skills_root / f".{resource_slug}.marketplace-{uuid.uuid4().hex[:8]}"
         backup = skills_root / f".{resource_slug}.backup-{uuid.uuid4().hex[:8]}"
+        placed = False
         try:
             await asyncio.to_thread(shutil.copytree, skill_source, staging)
+            if marketplace_manifest is not None:
+                await asyncio.to_thread(
+                    atomic_json_write, staging / "manifest.json", marketplace_manifest,
+                    backup=False, fsync=True,
+                )
             if target.exists():
                 target.rename(backup)
             staging.rename(target)
+            placed = True
             from openakita.api.routes.skills import _propagate
 
+            if first_install:
+                await asyncio.to_thread(
+                    MarketplaceInstallManager._bind_initial_skill_category,
+                    resource_slug, resource_category, request,
+                )
+                await asyncio.to_thread(
+                    MarketplaceInstallManager._enable_new_skill, resource_slug,
+                )
             await _propagate(request, "install")
             shutil.rmtree(backup, ignore_errors=True)
         except Exception as exc:
@@ -493,7 +664,77 @@ class MarketplaceInstallManager:
             if backup.exists():
                 shutil.rmtree(target, ignore_errors=True)
                 backup.rename(target)
+            elif first_install and placed:
+                shutil.rmtree(target, ignore_errors=True)
             raise MarketplaceInstallError("marketplace_skill_install_failed") from exc
+
+        from openakita.api.routes.skills import _resolve_agent
+        from openakita.skills.allowlist_io import read_allowlist
+        from openakita.skills.loader import DEFAULT_DISABLED_SKILLS
+
+        _, allowlist = await asyncio.to_thread(read_allowlist)
+        enabled = (
+            resource_slug in allowlist if allowlist is not None
+            else resource_slug not in DEFAULT_DISABLED_SKILLS
+        )
+        agent = _resolve_agent(request)
+        registry = getattr(agent, "skill_registry", None)
+        entry = registry.get(resource_slug) if registry is not None else None
+        hot_loaded = (
+            entry is not None and not entry.disabled and entry.skill_path is not None
+            and Path(entry.skill_path).resolve() == (target / "SKILL.md").resolve()
+        )
+        return enabled, enabled and not hot_loaded
+
+    @staticmethod
+    def _enable_new_skill(skill_id: str) -> None:
+        from openakita.skills.allowlist_io import read_allowlist, upsert_skill_ids
+        from openakita.skills.loader import DEFAULT_DISABLED_SKILLS, SkillLoader
+
+        _, allowlist = read_allowlist()
+        defaults = None
+        if allowlist is None and skill_id in DEFAULT_DISABLED_SKILLS:
+            # Materialize the existing defaults only when an explicit install
+            # overrides a default-disabled ID; don't enable unrelated skills.
+            loader = SkillLoader()
+            loader.load_all(settings.project_root)
+            defaults = loader.compute_effective_allowlist(None)
+        upsert_skill_ids({skill_id}, default_allowlist=defaults)
+
+    @staticmethod
+    def _bind_initial_skill_category(skill_id: str, category: Any, request: Any) -> None:
+        from openakita.api.routes.skills import _resolve_agent
+        from openakita.skills.categories import is_valid_category_name
+        from openakita.skills.category_store import CategoryStore
+
+        # Old servers omit this optional catalog field. It is a local label,
+        # never a filesystem path or a reason to reject an otherwise valid ZIP.
+        if not isinstance(category, str):
+            return
+        category = category.strip()
+        if (
+            not is_valid_category_name(category)
+            or len(category.encode("utf-8")) > 120
+            or any(ord(char) < 32 for char in category)
+            or category in {"Uncategorized", "未分类"}
+        ):
+            return
+        agent = _resolve_agent(request)
+        registry = getattr(agent, "skill_category_registry", None)
+        entry = registry.get(category) if registry is not None else None
+        loader = getattr(agent, "skill_loader", None)
+        if (entry is not None and entry.system_readonly) or (
+            loader is not None and any(
+                skill.system and skill.category == category
+                for skill in loader.registry.list_all()
+            )
+        ):
+            logger.warning("Skipping Marketplace category that is reserved for system skills")
+            return
+        store = getattr(registry, "store", None)
+        if store is None:
+            store = CategoryStore(settings.project_root / "data" / "skills" / "skill_categories.json")
+        store.bind_skill_if_unbound(skill_id, category)
 
     @staticmethod
     async def _install_mcp(source: Path, request: Any) -> None:

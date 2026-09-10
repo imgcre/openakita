@@ -50,11 +50,12 @@ def instruction():
 
 
 async def test_installation_proof_never_exports_account_tokens(monkeypatch):
-    account = object.__new__(AccountOIDCManager)
-    account._client_id = "openakita-desktop"
-    account._base_url = "https://account.openakita.cn"
-    account._login_lock = asyncio.Lock()
-    account._tokens = SimpleNamespace(load_refresh_token=AsyncMock(return_value="private-refresh"))
+    account = AccountOIDCManager(
+        store=AsyncMock(),
+        token_store=SimpleNamespace(load_refresh_token=AsyncMock(return_value="private-refresh")),
+        account_base_url="https://account.openakita.cn",
+    )
+    account._identity_locked = AsyncMock(return_value={"status": "active"})
 
     def handle(req):
         assert str(req.url) == "https://account.openakita.cn/oauth/desktop-install-proof"
@@ -65,10 +66,10 @@ async def test_installation_proof_never_exports_account_tokens(monkeypatch):
             "installation_token": TOKEN,
             "device_id": "instance-one",
         }
-        return httpx.Response(200, json={"proof": "scoped-proof"})
+        return httpx.Response(200, json={"proof": "p" * 64})
 
     transport(monkeypatch, handle)
-    assert await account.marketplace_install_proof(TOKEN, "instance-one") == "scoped-proof"
+    assert await account.marketplace_install_proof(TOKEN, "instance-one") == "p" * 64
     account._tokens.load_refresh_token.return_value = None
     with pytest.raises(AccountOIDCError, match="marketplace_account_required"):
         await account.marketplace_install_proof(TOKEN, "instance-one")
@@ -76,6 +77,7 @@ async def test_installation_proof_never_exports_account_tokens(monkeypatch):
 
 async def test_prepare_and_confirm_get_fresh_proofs_and_start_only_once(tmp_path, monkeypatch):
     manager = MarketplaceInstallManager(tmp_path)
+    manager._inspect = AsyncMock(return_value={"install_action": "install", "_installation_snapshot": "unchanged", "_installation_scope": "test"})
     request = request_with_account()
     actions = []
 
@@ -91,21 +93,22 @@ async def test_prepare_and_confirm_get_fresh_proofs_and_start_only_once(tmp_path
 
     transport(monkeypatch, handle)
     manager._run = AsyncMock()
-    first = await manager.prepare(TOKEN, ENDPOINT, request)
-    assert first == await manager.prepare(TOKEN, ENDPOINT, request)
+    first = await manager.prepare(TOKEN, ENDPOINT, account=request.app.state.account_oidc_manager)
+    assert first == await manager.prepare(TOKEN, ENDPOINT, account=request.app.state.account_oidc_manager)
     assert "token" not in first and "download_url" not in first
     assert "scoped-proof" not in (manager.jobs_dir / "job-one.json").read_text()
-    await manager.confirm(first["id"], request)
+    await manager.confirm(first["id"], request, account=request.app.state.account_oidc_manager)
     with pytest.raises(MarketplaceInstallError, match="marketplace_install_busy"):
-        await manager.confirm(first["id"], request)
+        await manager.confirm(first["id"], request, account=request.app.state.account_oidc_manager)
     await asyncio.sleep(0)
-    assert actions == ["consume", "authorize"]
-    assert request.app.state.account_oidc_manager.marketplace_install_proof.await_count == 2
+    assert actions == ["consume", "authorize", "authorize"]
+    assert request.app.state.account_oidc_manager.marketplace_install_proof.await_count == 3
     manager._run.assert_awaited_once()
 
 
 async def test_account_switch_after_preview_cannot_start_installation(tmp_path, monkeypatch):
     manager = MarketplaceInstallManager(tmp_path)
+    manager._inspect = AsyncMock(return_value={"install_action": "install", "_installation_snapshot": "unchanged", "_installation_scope": "test"})
     request = request_with_account()
 
     def handle(req):
@@ -114,9 +117,9 @@ async def test_account_switch_after_preview_cannot_start_installation(tmp_path, 
         return httpx.Response(200, json={"data": instruction()})
 
     transport(monkeypatch, handle)
-    job = await manager.prepare(TOKEN, ENDPOINT, request)
+    job = await manager.prepare(TOKEN, ENDPOINT, account=request.app.state.account_oidc_manager)
     with pytest.raises(MarketplaceInstallError, match="marketplace_account_mismatch"):
-        await manager.confirm(job["id"], request)
+        await manager.confirm(job["id"], request, account=request.app.state.account_oidc_manager)
     assert manager._jobs[job["id"]]["status"] == "ready"
     assert not manager._tasks
 
@@ -127,23 +130,25 @@ async def test_account_switch_after_preview_cannot_start_installation(tmp_path, 
         (401, "marketplace_account_required"),
         (403, "marketplace_account_mismatch"),
         (404, "marketplace_instruction_unavailable"),
-        (503, "marketplace_identity_unavailable"),
+        (503, "marketplace_connection_failed"),
     ],
 )
 async def test_authorization_errors_remain_actionable(tmp_path, monkeypatch, status, code):
     manager = MarketplaceInstallManager(tmp_path)
+    manager._inspect = AsyncMock(return_value={"install_action": "install", "_installation_snapshot": "unchanged", "_installation_scope": "test"})
     transport(monkeypatch, lambda req: httpx.Response(status, json={"error": "denied"}))
     with pytest.raises(MarketplaceInstallError, match=code):
-        await manager.prepare(TOKEN, ENDPOINT, request_with_account())
+        await manager.prepare(TOKEN, ENDPOINT, account=request_with_account().app.state.account_oidc_manager)
     assert not manager._jobs
 
 
 async def test_no_account_and_untrusted_source_never_receive_proof(tmp_path, monkeypatch):
     manager = MarketplaceInstallManager(tmp_path)
+    manager._inspect = AsyncMock(return_value={"install_action": "install", "_installation_snapshot": "unchanged", "_installation_scope": "test"})
     request = request_with_account()
     with pytest.raises(MarketplaceInstallError, match="marketplace_endpoint_invalid"):
-        await manager.prepare(TOKEN, "https://untrusted.example", request)
+        await manager.prepare(TOKEN, "https://untrusted.example", account=request.app.state.account_oidc_manager)
     request.app.state.account_oidc_manager.marketplace_install_proof.assert_not_called()
     request.app.state.account_oidc_manager = None
     with pytest.raises(MarketplaceInstallError, match="marketplace_account_required"):
-        await manager.prepare(TOKEN, ENDPOINT, request)
+        await manager.prepare(TOKEN, ENDPOINT, account=request.app.state.account_oidc_manager)

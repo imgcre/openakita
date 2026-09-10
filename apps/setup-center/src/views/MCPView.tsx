@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useMCPChanges } from "../hooks/useMCPChanges";
 import { useTranslation } from "react-i18next";
 import {
   IconLink,
@@ -559,22 +560,32 @@ export function MCPView({
   const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null);
   const [quickConfigDialog, setQuickConfigDialog] = useState<QuickConfigDialogState>(null);
 
-  const fetchServers = useCallback(async () => {
+  const fetchSequence = useRef(0);
+  const loadServers = useCallback(async (quiet = false) => {
     if (!serviceRunning) return;
-    setLoading(true);
+    const sequence = ++fetchSequence.current;
+    if (!quiet) setLoading(true);
     try {
       const res = await safeFetch(`${apiBaseUrl}/api/mcp/servers`);
+      if (!res.ok) throw new Error(`MCP list HTTP ${res.status}`);
       const data = await res.json();
+      if (sequence !== fetchSequence.current) return;
       setServers(data.servers || []);
       if (typeof data.mcp_enabled === "boolean") setMcpEnabled(data.mcp_enabled);
       setFetchError(null);
     } catch {
-      setFetchError(t("mcp.fetchFailed"));
+      if (sequence === fetchSequence.current && !quiet) setFetchError(t("mcp.fetchFailed"));
+    } finally {
+      if (sequence === fetchSequence.current) setLoading(false);
     }
-    setLoading(false);
   }, [serviceRunning, apiBaseUrl, t]);
 
-  useEffect(() => { fetchServers(); }, [fetchServers]);
+  const fetchServers = useCallback(() => loadServers(), [loadServers]);
+  useEffect(() => {
+    void fetchServers();
+    return () => { ++fetchSequence.current; };
+  }, [fetchServers]);
+  useMCPChanges(serviceRunning, () => loadServers(true));
 
   const showMsg = (text: string, ok: boolean) => {
     if (ok) toast.success(text);

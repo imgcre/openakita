@@ -2,6 +2,30 @@
 
 本文档以仓库当前实现为准，覆盖测试分层、运行方式、CI 集成和开发流程。
 
+## 账号与市场回归测试
+
+| 位置 | 覆盖范围 |
+| --- | --- |
+| `tests/unit/account/` | 配置、PKCE、会话生命周期、身份恢复、状态存储、原生凭据 |
+| `tests/unit/marketplace/` | 安全校验、授权、版本决策、Skill 启用与分类 |
+| `tests/fixtures/account.py` | 共享的内存凭据和模拟 HTTP 传输 |
+| `tests/api/test_account_feature_mode.py` | 发行版账号能力和路由开关 |
+| `tests/api/test_marketplace_account_boundary.py` | 原生客户端与远程/网页调用边界 |
+| `tests/integration/test_skill_install_uninstall_paths.py` | 真实文件安装、HTTP 卸载及工作区路径一致性 |
+
+```powershell
+uv run --no-sync pytest tests/unit/account tests/unit/marketplace tests/api/test_account_feature_mode.py tests/api/test_marketplace_account_boundary.py tests/integration/test_skill_install_uninstall_paths.py -q
+```
+
+在 `apps/setup-center/` 中运行前端回归：
+
+```powershell
+npm run test:run -- src/marketplace/__tests__ src/utils/__tests__/accountLogin.test.ts src/components/__tests__/MarketplaceInstallDialog.test.tsx
+```
+
+账号测试使用内存凭据，账号禁用模式的测试替换 OS 凭据清理操作；市场单元测试
+默认隔离工作区。测试不应读取个人安装目录或修改真实账号凭据。
+
 ---
 
 ## 测试分层架构

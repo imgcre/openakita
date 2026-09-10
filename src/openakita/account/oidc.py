@@ -8,13 +8,17 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import httpx
+from filelock import FileLock, Timeout
 
 from openakita.account.config import (
     DEFAULT_ACCOUNT_BASE_URL,
@@ -118,6 +122,7 @@ class LoginAttempt:
     status: str = "pending"
     error: str | None = None
     created_at: float = field(default_factory=time.time)
+    generation: int = 0
 
 
 def pkce_challenge(verifier: str) -> str:
@@ -260,6 +265,49 @@ class AccountOIDCManager:
         self._access_token: str | None = None
         self._session_id: str | None = None
         self._account_user_id: str | None = None
+        self._credential_lock = asyncio.Lock()
+        self._generation = 0
+        self._access_expires_at = 0.0
+        self._access_credential_hash: str | None = None
+        self._vault_lock = None
+        if isinstance(self._tokens, KeyringTokenStore):
+            namespace = hashlib.sha256(self._tokens.username.encode()).hexdigest()[:24]
+            self._vault_lock = FileLock(
+                str(Path.home() / ".openakita" / "account" / f"{namespace}.lock"),
+                thread_local=False,
+            )
+
+    @asynccontextmanager
+    async def _credentials(self):
+        # Separate desktop backends share the same OS credential. Serialize
+        # refresh rotation, logout and identity publication across processes.
+        async with self._credential_lock:
+            if self._vault_lock is None:
+                yield
+                return
+            await asyncio.to_thread(Path(self._vault_lock.lock_file).parent.mkdir,
+                                    parents=True, exist_ok=True)
+            while True:
+                acquisition = asyncio.create_task(asyncio.to_thread(
+                    self._vault_lock.acquire, timeout=0,
+                ))
+                try:
+                    await asyncio.shield(acquisition)
+                    break
+                except Timeout:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    try:
+                        await acquisition
+                    except Timeout:
+                        pass
+                    else:
+                        await asyncio.to_thread(self._vault_lock.release)
+                    raise
+            try:
+                yield
+            finally:
+                await asyncio.to_thread(self._vault_lock.release)
 
     async def start(
         self, *, flow: str = "loopback", redirect_uri: str | None = None
@@ -268,6 +316,20 @@ class AccountOIDCManager:
             raise AccountOIDCError("unsupported login flow")
         if flow == "native" and redirect_uri not in NATIVE_CALLBACK_URIS:
             raise AccountOIDCError("invalid native redirect URI")
+        self._generation += 1
+        generation = self._generation
+        async with self._credentials():
+            return await self._start_locked(generation, flow=flow, redirect_uri=redirect_uri)
+
+    async def _start_locked(self, generation: int, *, flow: str, redirect_uri: str | None) -> LoginAttempt:
+        if generation != self._generation:
+            raise AccountOIDCError("login attempt was superseded")
+        for old in self._attempts.values():
+            if old.status in {"pending", "exchanging"}:
+                old.status = "expired"
+                old.device_code = ""
+        if self._listener_attempt is not None:
+            await self._close_listener(self._listener_attempt)
         self._attempts = {
             key: value
             for key, value in self._attempts.items()
@@ -276,7 +338,7 @@ class AccountOIDCManager:
         if len(self._attempts) >= 32:
             raise AccountOIDCError("too many login attempts")
         if flow == "device":
-            return await self._start_device()
+            return await self._start_device(generation)
         if flow == "loopback" and self._listener_attempt is not None:
             await self.cancel(self._listener_attempt.attempt_id)
         redirect_uri = redirect_uri if flow == "native" else CALLBACK_URI
@@ -288,6 +350,7 @@ class AccountOIDCManager:
                 "client_id": self._client_id,
                 "redirect_uri": redirect_uri,
                 "response_type": "code",
+                "prompt": "select_account",
                 "scope": "openid profile email offline_access entitlements organizations",
                 "state": state,
                 "code_challenge": pkce_challenge(verifier),
@@ -296,6 +359,7 @@ class AccountOIDCManager:
         )
         attempt = LoginAttempt(
             attempt_id=attempt_id,
+            generation=generation,
             state=state,
             verifier=verifier,
             authorization_url=f"{self._base_url}/oauth/authorize?{query}",
@@ -320,7 +384,7 @@ class AccountOIDCManager:
         asyncio.get_running_loop().call_later(LOGIN_TTL, self._expire_attempt, attempt)
         return attempt
 
-    async def _start_device(self) -> LoginAttempt:
+    async def _start_device(self, generation: int) -> LoginAttempt:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -367,6 +431,7 @@ class AccountOIDCManager:
             raise AccountOIDCError("account_device_start_failed") from exc
         attempt = LoginAttempt(
             attempt_id=secrets.token_urlsafe(18),
+            generation=generation,
             state="",
             verifier="",
             authorization_url=authorization_url,
@@ -392,6 +457,8 @@ class AccountOIDCManager:
 
     async def _poll_device(self, attempt: LoginAttempt) -> None:
         async with self._login_lock:
+            if attempt.generation != self._generation:
+                attempt.status = "expired"
             if attempt.status != "pending":
                 return
             if time.time() - attempt.created_at >= attempt.expires_in:
@@ -412,7 +479,13 @@ class AccountOIDCManager:
                 if response.status_code == 429 or response.status_code >= 500:
                     attempt.poll_interval *= 2
                     return
+                if attempt.generation != self._generation:
+                    attempt.status = "expired"
                 if attempt.status != "pending":
+                    if response.status_code == 200:
+                        refresh = response.json().get("refresh_token")
+                        if isinstance(refresh, str) and refresh:
+                            await self._revoke_refresh(refresh)
                     return
                 payload = response.json()
                 if response.status_code != 200:
@@ -434,7 +507,7 @@ class AccountOIDCManager:
                 # Once tokens have been issued, do not poll the one-time grant
                 # again even if userinfo or local credential persistence fails.
                 attempt.status = "exchanging"
-                await self._accept_tokens(payload)
+                await self._accept_tokens(payload, attempt.generation)
                 attempt.status = "complete"
             except asyncio.CancelledError:
                 # A disconnected request may have consumed the one-time grant.
@@ -468,6 +541,8 @@ class AccountOIDCManager:
         async with self._login_lock:
             if not secrets.compare_digest(attempt.state.encode(), state.encode()):
                 raise AccountOIDCError("invalid OAuth state")
+            if attempt.generation != self._generation:
+                attempt.status = "expired"
             if attempt.flow == "native" and attempt.status == "complete":
                 return True
             if attempt.status != "pending":
@@ -484,7 +559,8 @@ class AccountOIDCManager:
             attempt.status = "exchanging"
             try:
                 await self._complete(
-                    code=code, verifier=attempt.verifier, redirect_uri=attempt.redirect_uri
+                    code=code, verifier=attempt.verifier, redirect_uri=attempt.redirect_uri,
+                    generation=attempt.generation
                 )
             except asyncio.CancelledError:
                 attempt.status = "failed"
@@ -550,43 +626,62 @@ class AccountOIDCManager:
         # The identity snapshot is intentionally retained for offline cache and
         # audit purposes. Its presence alone must not make the UI appear signed
         # in after the OS-vault refresh token has been cleared on logout.
-        if not await self._tokens.load_refresh_token():
-            return {"status": "signed_out"}
-        return (await self._store.snapshot()) or {"status": "signed_out"}
-
-    async def marketplace_install_proof(self, token: str, device_id: str) -> str:
-        """Keep account credentials on the instance; export only a scoped proof."""
-        if self._client_id != "openakita-desktop":
-            raise AccountOIDCError("marketplace_account_unsupported")
-        async with self._login_lock:
-            refresh = await self._tokens.load_refresh_token()
-            if not refresh:
-                raise AccountOIDCError("marketplace_account_required")
+        async with self._credentials():
             try:
-                async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
-                    response = await client.post(
-                        f"{self._base_url}/oauth/desktop-install-proof",
-                        json={
-                            "client_id": self._client_id,
-                            "refresh_token": refresh,
-                            "target_client_id": "marketplace",
-                            "installation_token": token,
-                            "device_id": device_id,
-                        },
-                    )
-            except httpx.HTTPError as exc:
-                raise AccountOIDCError("marketplace_identity_unavailable") from exc
-            if response.status_code in (400, 401, 403):
-                raise AccountOIDCError("marketplace_account_required")
-            if response.status_code != 200:
-                raise AccountOIDCError("marketplace_identity_unavailable")
-            proof = response.json().get("proof")
-            if not isinstance(proof, str) or not proof:
-                raise AccountOIDCError("marketplace_identity_unavailable")
-            return proof
+                return await self._identity_locked()
+            except (AccountOIDCError, httpx.HTTPError, ValueError):
+                # A network outage is not a logout, and must not expose an
+                # unrelated cached profile as the owner of the saved token.
+                if not await self._tokens.load_refresh_token():
+                    return {"status": "signed_out"}
+                return {"status": "unavailable", "status_reason": "account_identity_unavailable"}
+
+    async def _identity_locked(self) -> dict:
+        refresh = await self._tokens.load_refresh_token()
+        if not refresh:
+            return {"status": "signed_out"}
+        credential_hash = hashlib.sha256(refresh.encode()).hexdigest()
+        snapshot = await self._store.snapshot(credential_hash=credential_hash)
+        if snapshot:
+            return snapshot
+        # Legacy credentials may have no local profile, or an old workspace's
+        # profile may belong to another account. Recover only via this grant.
+        generation = self._generation
+        access = await self._valid_access_token_locked()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{self._base_url}/oauth/userinfo",
+                headers={"Authorization": f"Bearer {access}"},
+            )
+        if response.status_code != 200:
+            raise AccountOIDCError("account identity is temporarily unavailable")
+        profile = response.json()
+        if not isinstance(profile, dict) or not isinstance(profile.get("sub"), str) or not profile["sub"]:
+            raise AccountOIDCError("userinfo is missing sub")
+        if generation != self._generation:
+            raise AccountOIDCError("account changed during identity recovery")
+        refresh = await self._tokens.load_refresh_token()
+        if not refresh:
+            return {"status": "signed_out"}
+        session_id = secrets.token_urlsafe(18)
+        await self._store.save_authenticated(
+            account_user_id=profile["sub"], profile_json=json.dumps(profile),
+            session_id=session_id,
+            credential_hash=hashlib.sha256(refresh.encode()).hexdigest(),
+        )
+        self._session_id, self._account_user_id = session_id, profile["sub"]
+        return await self._store.snapshot(credential_hash=hashlib.sha256(refresh.encode()).hexdigest())
 
     async def refresh_entitlements(self) -> dict:
-        access_token = await self._valid_access_token()
+        async with self._credentials():
+            return await self._refresh_entitlements_locked()
+
+    async def _refresh_entitlements_locked(self) -> dict:
+        identity = await self._identity_locked()
+        if identity["status"] != "active":
+            raise AccountOIDCError("not signed in")
+        access_token = await self._valid_access_token_locked()
+        self._account_user_id = identity["account_user_id"]
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 f"{self._base_url}/api/v1/me/entitlements",
@@ -596,9 +691,6 @@ class AccountOIDCManager:
             raise AccountOIDCError(f"entitlement refresh failed with HTTP {response.status_code}")
         payload = response.json()
         if not self._account_user_id:
-            snapshot = await self._store.snapshot()
-            self._account_user_id = snapshot.get("account_user_id") if snapshot else None
-        if not self._account_user_id:
             raise AccountOIDCError("account identity is unavailable")
         await self._store.save_entitlements(
             account_user_id=self._account_user_id,
@@ -607,16 +699,102 @@ class AccountOIDCManager:
         return payload
 
     async def logout(self) -> str:
-        for attempt_id in list(self._attempts):
-            await self.cancel(attempt_id)
-        if self._session_id:
-            await self._store.revoke_session(self._session_id)
-        await self._tokens.clear()
-        self._access_token = None
-        self._session_id = None
-        self._account_user_id = None
-        query = urlencode({"client_id": self._client_id})
-        return f"{self._base_url}/oauth/end-session?{query}"
+        # Invalidate in-flight callbacks before waiting for credential I/O.
+        self._generation += 1
+        async with self._credentials():
+            for attempt in self._attempts.values():
+                if attempt.status in {"pending", "exchanging"}:
+                    attempt.status = "expired"
+                    attempt.device_code = ""
+                    attempt.verifier = ""
+            if self._server is not None:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+            refresh = await self._tokens.load_refresh_token()
+            if refresh:
+                await self._revoke_refresh(refresh)
+            if self._session_id:
+                await self._store.revoke_session(self._session_id)
+            await self._tokens.clear()
+            self._access_token = None
+            self._access_expires_at = 0
+            self._session_id = None
+            self._account_user_id = None
+        return ""
+
+    async def _revoke_refresh(self, refresh: str) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base_url}/oauth/revoke",
+                    data={"token": refresh, "client_id": self._client_id},
+                )
+        except httpx.HTTPError as exc:
+            raise AccountOIDCError("account revocation is temporarily unavailable") from exc
+        if response.status_code >= 300:
+            raise AccountOIDCError("account revocation is temporarily unavailable")
+
+    async def marketplace_handoff(self, target_origin: str) -> str | None:
+        async with self._credentials():
+            identity = await self._identity_locked()
+            if identity["status"] == "signed_out":
+                return None
+            if identity["status"] != "active":
+                raise AccountOIDCError("marketplace_account_required")
+            refresh = await self._tokens.load_refresh_token()
+            if not refresh:
+                return None
+            return await self._marketplace_proof_locked(
+                "/oauth/desktop-handoff",
+                refresh,
+                {"target_origin": target_origin},
+                "ticket",
+            )
+
+    async def marketplace_install_proof(self, token: str, device_id: str) -> str:
+        async with self._credentials():
+            if (await self._identity_locked())["status"] != "active":
+                raise AccountOIDCError("marketplace_account_required")
+            refresh = await self._tokens.load_refresh_token()
+            if not refresh:
+                raise AccountOIDCError("marketplace_account_required")
+            return await self._marketplace_proof_locked(
+                "/oauth/desktop-install-proof",
+                refresh,
+                {"installation_token": token, "device_id": device_id},
+                "proof",
+            )
+
+    async def _marketplace_proof_locked(
+        self,
+        path: str,
+        refresh: str,
+        values: dict[str, str],
+        field_name: str,
+    ) -> str:
+        generation = self._generation
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._base_url}{path}",
+                    json={
+                        "client_id": self._client_id,
+                        "refresh_token": refresh,
+                        "target_client_id": "marketplace",
+                        **values,
+                    },
+                )
+            if generation != self._generation:
+                raise AccountOIDCError("account changed during request")
+            if response.status_code != 200:
+                raise AccountOIDCError("marketplace account authorization failed")
+            value = response.json().get(field_name)
+            if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,512}", value):
+                raise AccountOIDCError("invalid marketplace account authorization")
+            return value
+        except (httpx.HTTPError, ValueError) as exc:
+            raise AccountOIDCError("marketplace account authorization unavailable") from exc
 
     async def _callback(
         self,
@@ -683,7 +861,10 @@ class AccountOIDCManager:
         code: str,
         verifier: str,
         redirect_uri: str = CALLBACK_URI,
+        generation: int | None = None,
     ) -> None:
+        if generation is None:
+            generation = self._generation
         async with httpx.AsyncClient(timeout=10.0) as client:
             token_response = await client.post(
                 f"{self._base_url}/oauth/token",
@@ -700,52 +881,91 @@ class AccountOIDCManager:
                     f"token exchange failed with HTTP {token_response.status_code}"
                 )
             tokens = token_response.json()
-        await self._accept_tokens(tokens)
+        await self._accept_tokens(tokens, generation)
 
-    async def _accept_tokens(self, tokens: dict) -> None:
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
-        if (
-            not isinstance(access_token, str)
-            or not isinstance(refresh_token, str)
-            or not access_token
-            or not refresh_token
-        ):
-            raise AccountOIDCError("token response is incomplete")
+    async def _accept_tokens(self, tokens: dict, generation: int) -> None:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            userinfo_response = await client.get(
-                f"{self._base_url}/oauth/userinfo",
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
-            if userinfo_response.status_code != 200:
-                raise AccountOIDCError("userinfo request failed")
-            profile = userinfo_response.json()
-        account_user_id = str(profile.get("sub", ""))
-        if not account_user_id:
-            raise AccountOIDCError("userinfo is missing sub")
-        session_id = secrets.token_urlsafe(18)
-        await self._tokens.save_refresh_token(refresh_token)
-        try:
-            await self._store.save_authenticated(
-                account_user_id=account_user_id,
-                profile_json=json.dumps(profile, separators=(",", ":")),
-                session_id=session_id,
-            )
-        except Exception:
-            await self._tokens.clear()
-            raise
-        self._access_token = access_token
-        self._session_id = session_id
-        self._account_user_id = account_user_id
-        await self.refresh_entitlements()
+            access_token = str(tokens.get("access_token", ""))
+            refresh_token = str(tokens.get("refresh_token", ""))
+            try:
+                if not access_token or not refresh_token:
+                    raise AccountOIDCError("token response is incomplete")
+                expires_in = max(0, int(tokens.get("expires_in", 0)))
+                userinfo_response = await client.get(
+                    f"{self._base_url}/oauth/userinfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                if userinfo_response.status_code != 200:
+                    raise AccountOIDCError("userinfo request failed")
+                profile = userinfo_response.json()
+                account_user_id = str(profile.get("sub", ""))
+                if not account_user_id:
+                    raise AccountOIDCError("userinfo is missing sub")
+            except Exception:
+                # Exchange already minted a grant; a failed profile lookup must not orphan it.
+                if refresh_token:
+                    await self._revoke_refresh(refresh_token)
+                raise
+        async with self._credentials():
+            if generation != self._generation:
+                await self._revoke_refresh(refresh_token)
+                raise AccountOIDCError("login attempt was superseded")
+            previous = await self._tokens.load_refresh_token()
+            session_id = secrets.token_urlsafe(18)
+            try:
+                # Revoke the old product grant before accepting the new identity.
+                if previous and previous != refresh_token:
+                    await self._revoke_refresh(previous)
+                if generation != self._generation:
+                    raise AccountOIDCError("login attempt was superseded")
+                await self._tokens.save_refresh_token(refresh_token)
+                await self._store.save_authenticated(
+                    account_user_id=account_user_id,
+                    profile_json=json.dumps(profile, separators=(",", ":")),
+                    session_id=session_id,
+                    credential_hash=hashlib.sha256(refresh_token.encode()).hexdigest(),
+                )
+                if generation != self._generation:
+                    raise AccountOIDCError("login attempt was superseded")
+            except Exception:
+                if previous and await self._tokens.load_refresh_token() == previous:
+                    pass  # Revocation failed: retain the existing local credential.
+                else:
+                    await self._tokens.clear()
+                    self._access_token = None
+                await self._revoke_refresh(refresh_token)
+                raise
+            self._access_token = access_token
+            self._access_credential_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+            self._access_expires_at = time.monotonic() + expires_in
+            self._session_id = session_id
+            self._account_user_id = account_user_id
+            # A temporary entitlement outage must not turn a committed login into failure.
+            try:
+                await self._refresh_entitlements_locked()
+            except (AccountOIDCError, httpx.HTTPError):
+                logger.warning("Account signed in; entitlement refresh is temporarily unavailable")
 
     async def _valid_access_token(self) -> str:
+        async with self._credentials():
+            return await self._valid_access_token_locked()
+
+    async def _valid_access_token_locked(self) -> str:
+        refresh_token = await self._tokens.load_refresh_token()
+        if not refresh_token:
+            self._access_token = None
+            raise AccountOIDCError("not signed in")
+        credential_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
+        if self._access_credential_hash != credential_hash:
+            self._access_token = None
+            self._session_id = None
+            self._account_user_id = None
         if self._session_id and not await self._store.session_is_active(self._session_id):
             self._access_token = None
             raise AccountOIDCError("account is suspended or session was revoked")
-        if self._access_token:
+        if self._access_token and self._access_expires_at > time.monotonic() + 30:
             return self._access_token
-        snapshot = await self._store.snapshot()
+        snapshot = await self._store.snapshot(credential_hash=credential_hash)
         if snapshot and snapshot.get("status") != "active":
             raise AccountOIDCError("account is suspended")
         refresh_token = await self._tokens.load_refresh_token()
@@ -761,15 +981,23 @@ class AccountOIDCManager:
                 },
             )
         if response.status_code != 200:
-            await self._tokens.clear()
-            raise AccountOIDCError("refresh token is no longer valid")
+            if response.status_code in {400, 401, 403}:
+                await self._tokens.clear()
+                self._access_token = None
+                raise AccountOIDCError("refresh token is no longer valid")
+            raise AccountOIDCError("account refresh is temporarily unavailable")
         tokens = response.json()
         self._access_token = str(tokens.get("access_token", ""))
         rotated = str(tokens.get("refresh_token", ""))
         if rotated:
             await self._tokens.save_refresh_token(rotated)
+            await self._store.rotate_credential(
+                credential_hash, hashlib.sha256(rotated.encode()).hexdigest(),
+            )
+        self._access_credential_hash = hashlib.sha256((rotated or refresh_token).encode()).hexdigest()
         if not self._access_token:
             raise AccountOIDCError("refresh response is incomplete")
+        self._access_expires_at = time.monotonic() + max(0, int(tokens.get("expires_in", 0)))
         return self._access_token
 
     def _expire_attempt(self, attempt: LoginAttempt) -> None:

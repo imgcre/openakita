@@ -337,6 +337,30 @@ class CategoryStore:
                 target["skills"].append(sid)
             self._save()
 
+    def bind_skill_if_unbound(self, skill_id: str, category: str) -> bool:
+        """Persist an initial binding without replacing a user's existing choice.
+
+        Unlike best-effort UI writes, installation must observe persistence errors
+        so it can roll back the new skill. Publish the in-memory state only after
+        the atomic disk write succeeds.
+        """
+        from copy import deepcopy
+
+        from openakita.utils.atomic_io import atomic_json_write
+
+        with self._lock:
+            if not skill_id or not category or self.get_binding(skill_id) is not None:
+                return False
+            data = deepcopy(self._data)
+            target = next((c for c in data["categories"] if c["name"] == category), None)
+            if target is None:
+                target = {"name": category, "description": "", "skills": []}
+                data["categories"].append(target)
+            target["skills"].append(skill_id)
+            atomic_json_write(self._path, data, allow_fallback=False)
+            self._data = data
+            return True
+
     def unbind_skill(self, skill_id: str) -> bool:
         """解绑技能。返回是否确实存在绑定。"""
         with self._lock:

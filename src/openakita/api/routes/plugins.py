@@ -497,8 +497,10 @@ def _install_plugin_source(
         return installer.install_from_url(src, plugins_dir, progress=progress)
     local = Path(src)
     if (local / "plugin.json").is_file():
-        return installer.install_from_path(local, plugins_dir, dev_mode=dev_mode)
-    return installer.install_bundle(local, plugins_dir)
+        return installer.install_from_path(
+            local, plugins_dir, dev_mode=dev_mode, progress=progress
+        )
+    return installer.install_bundle(local, plugins_dir, progress=progress)
 
 
 async def _stage_plugin_update(
@@ -785,6 +787,7 @@ async def _do_install(src: str, plugins_dir: Path, progress: InstallProgress, re
             shutil.rmtree(staging_root, ignore_errors=True)
             raise
         _record_install_source(pm, plugin_id, recorded_source)
+        progress.update("loading", "正在加载插件")
         hot_loaded = False
         if pm is not None:
             try:
@@ -803,6 +806,7 @@ async def _do_install(src: str, plugins_dir: Path, progress: InstallProgress, re
     )
     _record_install_source(pm, plugin_id, recorded_source)
 
+    progress.update("loading", "正在加载插件")
     hot_loaded = False
     if pm is not None:
         entry = pm.state.get_entry(plugin_id) if pm.state else None

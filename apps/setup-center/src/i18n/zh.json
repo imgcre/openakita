@@ -76,7 +76,9 @@
     "signOut": "退出登录",
     "signingOut": "正在退出登录…",
     "signedOutSuccess": "已退出登录",
-    "signOutFailed": "退出登录失败"
+    "signOutFailed": "退出登录失败",
+    "identityUnavailable": "登录状态待确认",
+    "identityUnavailableHint": "暂时无法确认已保存的账号，请重试同步或重新登录。"
   },
   "topbar": {
     "openMarketplace": "打开市场",
@@ -135,7 +137,8 @@
     "webAccess": "网页访问",
     "remoteUrl": "远程地址",
     "copyRemoteUrl": "复制远程访问地址",
-    "ipNotFound": "无法获取外网 IP，请用 ipconfig 或 ifconfig 查看"
+    "ipNotFound": "无法获取外网 IP，请用 ipconfig 或 ifconfig 查看",
+    "marketplaceDesktopConnectionFailed": "桌面端与本地服务的账号连接未就绪，请重启桌面端和本地服务后再试。"
   },
   "remoteAccess": {
     "quickCopy": "快速复制地址",
@@ -4166,6 +4169,14 @@
       "autoCloneDetailDesc": "任务堆积超过阈值时自动创建分身处理。分身共享岗位记忆，同一任务链由同一分身完成。空闲分身在心跳时自动回收。",
       "permissionsTitle": "权限控制",
       "llmEndpointTitle": "LLM 端点偏好",
+      "llmEndpointDefault": "使用默认端点",
+      "llmEndpointUnlisted": "当前列表中未找到",
+      "llmEndpointUnhealthy": "暂不可用",
+      "llmEndpointRefresh": "刷新端点",
+      "llmEndpointLoading": "正在加载端点…",
+      "llmEndpointLoadError": "端点加载失败，请检查后端连接并刷新。已保存的选择不会被清除。",
+      "llmEndpointEmpty": "尚无可用端点，请先在模型配置中添加端点，再刷新。",
+      "llmEndpointLocked": "组织运行中，请先暂停或停止组织，再修改成员端点。",
       "edgeSource": "起点",
       "edgeTarget": "终点",
       "edgeTypeLabel": "连线类型"
@@ -4209,8 +4220,20 @@
     "install": "确认安装",
     "completed": "资源已安装，可以在 OpenAkita 中使用。",
     "completedRestart": "资源已安装，重启 OpenAkita 后即可使用。",
-    "types": { "plugin": "插件", "skill": "Skill", "mcp": "MCP" },
-    "status": { "ready": "等待确认", "downloading": "正在下载", "verifying": "正在验证", "installing": "正在安装", "installed": "安装完成", "failed": "安装失败", "cancelled": "已取消" },
+    "types": {
+      "plugin": "插件",
+      "skill": "Skill",
+      "mcp": "MCP"
+    },
+    "status": {
+      "ready": "等待确认",
+      "downloading": "正在下载",
+      "verifying": "正在验证",
+      "installing": "正在安装",
+      "installed": "安装完成",
+      "failed": "安装失败",
+      "cancelled": "已取消"
+    },
     "errors": {
       "marketplace_server_login_required": "目标服务的连接凭据已失效，请重新连接该服务。",
       "marketplace_account_unsupported": "当前账号提供方不支持官方市场安装。",
@@ -4248,8 +4271,65 @@
       "marketplace_mcp_install_failed": "MCP 安装失败。",
       "marketplace_runtime_unavailable": "OpenAkita 服务尚未就绪，请稍后重试。",
       "marketplace_install_interrupted": "上次安装意外中断，请重新安装。",
-      "marketplace_install_failed": "安装未完成，请返回 Marketplace 重新发起安装。"
-    }
+      "marketplace_install_failed": "安装未完成，请返回 Marketplace 重新发起安装。",
+      "marketplace_install_state_changed": "本地安装状态已变化，请核对版本后重新确认；若安装已中止，请从市场重新打开。",
+      "marketplace_account_authorization_failed": "无法验证账户，请重新登录后再试。"
+    },
+    "failureReasons": {
+      "dependency_network": "下载插件依赖时网络连接中断，自动重试后仍未完成。",
+      "dependency_timeout": "安装插件依赖超时。",
+      "dependency_runtime": "无法启动或运行 Python 依赖安装程序。",
+      "dependency_install": "Python 依赖安装失败，请查看下面的具体原因。"
+    },
+    "failureStage": "失败阶段：{{stage}}",
+    "lastDependency": "最后处理的依赖：{{name}}",
+    "networkRetryHint": "请检查网络、代理或 Python 镜像源连接，然后从市场重新发起安装。",
+    "failureRetryHint": "修复上述问题后，请从市场重新发起安装。",
+    "pluginSetup": {
+      "done": "完成",
+      "failed": "无法确认插件状态，请重试。资源文件已安装，不需要重新下载。",
+      "working": "正在检查权限并加载插件…",
+      "permissions": "插件已安装。请授权以下权限，以便使用完整功能；暂不授权可能导致部分功能不可用。",
+      "grant": "授权并继续",
+      "later": "稍后处理",
+      "retry": "重新检查",
+      "disabled": "插件已安装，保留了原来的禁用状态。可以在这里启用。",
+      "enable": "启用插件",
+      "ready": "插件权限已就绪，已成功加载。",
+      "staged": "新版本已安装，尚未生效。请先应用更新，再确认新版本需要的权限。",
+      "applyUpdate": "应用更新并继续",
+      "enableUpdate": "启用并应用更新",
+      "notLoaded": "插件已安装，但尚未成功加载。请尝试加载；若服务尚未就绪，可在启动服务后重试。",
+      "load": "加载插件"
+    },
+    "currentDependency": "正在处理：{{name}}",
+    "elapsed": "已用时 {{time}}",
+    "stages": {
+      "downloading": "正在下载资源包…",
+      "verifying": "正在校验资源包…",
+      "extracting": "正在解压资源包…",
+      "installing": "正在安装文件…",
+      "dependencies": "正在解析依赖…",
+      "dependency_resolving": "正在解析依赖…",
+      "dependency_downloading": "正在下载依赖…",
+      "dependency_building": "正在构建依赖…",
+      "dependency_installing": "正在安装依赖…",
+      "dependency_retrying": "依赖下载中断，正在绕过缓存重试…",
+      "loading": "正在加载插件…"
+    },
+    "skillActivationHint": "首次安装的技能将自动启用；升级或重装保留你原来的启用状态。",
+    "upgradeTitle": "升级 Marketplace 资源",
+    "upgrade": "确认升级",
+    "replace": "确认覆盖安装",
+    "upgradeHint": "已安装 v{{current}}，是否升级到 v{{target}}？",
+    "downgradeHint": "已安装较新版本 v{{current}}，本次选择的是 v{{target}}，不会覆盖现有版本。",
+    "replaceHint": "发现同名资源，但无法确认其来源或版本。继续将覆盖现有文件，请确认是否安装。",
+    "alreadyInstalled": "已安装相同版本 v{{version}}，无需重复安装。现有文件和启用状态保持不变。",
+    "alreadyInstalledPending": "v{{version}} 已准备就绪，等待重启 OpenAkita 生效，无需重复安装。",
+    "completedSkillEnabled": "技能已安装并启用，下一条消息即可使用。部分技能还需要配置外部服务或凭据。",
+    "completedSkillDisabled": "技能已安装，保留了原来的禁用状态。如需使用，请在技能管理中启用。",
+    "completedSkillRestart": "技能已安装并设为启用，尚未完成运行时加载。请重启 OpenAkita 后使用。",
+    "completedSkillUnknown": "技能已安装，请在技能管理中确认启用状态。"
   },
   "knowledgeBase": {
     "title": "云知识库",

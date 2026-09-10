@@ -1,31 +1,45 @@
+import { MarketplacePluginSetup } from "./MarketplacePluginSetup";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { AlertCircle, CheckCircle2, Download, PackageCheck, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { MarketplaceInstallProgress, type InstallationProgress } from "./MarketplaceInstallProgress";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { getCurrentDeepLinks, IS_TAURI, IS_CAPACITOR, onDeepLinkOpen, openExternalUrl } from "../platform";
+import { getCurrentDeepLinks, IS_TAURI, IS_CAPACITOR, onDeepLinkOpen } from "../platform";
+import { desktopAccountHeaders, openMarketplaceWithAccount } from "../marketplace/open";
+import { safeFetchResponse } from "../providers";
 import {
   buildMarketplaceContextUrlFromDeepLink,
   hasMarketplaceClientVersion,
   marketplaceDeepLinkAction,
 } from "../marketplace/navigation";
 
-import { acceptMobileInstall, installRequest, pendingInstall, saveInstall, openMarketplace, marketplaceOpenErrorKey, type PendingInstall } from '../marketplace/mobile';
+import { acceptMobileInstall, installRequest, pendingInstall, saveInstall, openMarketplace, marketplaceOpenErrorKey, targetFetch, targetIsCurrent, type PendingInstall } from '../marketplace/mobile';
 
-type InstallJob = {
+type InstallJob = InstallationProgress & {
   id: string;
   status: "ready" | "downloading" | "verifying" | "installing" | "installed" | "failed" | "cancelled";
-  progress: number;
+  progress: number | null;
   resource_name: string;
   resource_type: "plugin" | "skill" | "mcp";
   version: string;
   permissions: string[];
   dependencies: string[];
   failure_code?: string;
+  failure_detail?: string;
+  failure_reason?: string;
+  failure_stage?: string;
   restart_required?: boolean;
+  skill_enabled?: boolean;
+  plugin_id?: string;
+  resource_slug?: string;
+  install_action?: "install" | "already_installed" | "upgrade" | "downgrade" | "replace";
+  installed_version?: string;
+  installed_pending_restart?: boolean;
+  already_installed?: boolean;
 };
 
 type ParsedLink = { token: string; endpoint: string };
@@ -48,10 +62,11 @@ function parseInstallLink(value: string): ParsedLink | null {
 }
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
+  const response = await safeFetchResponse(url, { ...init, headers: { "Content-Type": "application/json", ...await desktopAccountHeaders(), ...(init?.headers || {}) } });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const code = payload?.detail?.code || "marketplace_connection_failed";
+    const code = payload?.detail?.code
+      || ([401, 403].includes(response.status) ? "marketplace_account_required" : "marketplace_connection_failed");
     throw new Error(code);
   }
   return payload.data as T;
@@ -71,6 +86,8 @@ export function MarketplaceInstallDialog({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const notifiedInstalls = useRef(new Set<string>());
+  const [pluginBusy, setPluginBusy] = useState(false);
   const [job, setJob] = useState<InstallJob | null>(null);
   const [errorCode, setErrorCode] = useState("");
   const recentlyHandled = useRef(new Map<string, number>());
@@ -80,6 +97,10 @@ export function MarketplaceInstallDialog({
   const mounted = useRef(true);
   const [acting, setActing] = useState(false);
   const [accountLabel, setAccountLabel] = useState('');
+  const requestPlugin = useCallback((path: string, init?: RequestInit) => {
+    if (!mobile.current) throw new Error('marketplace_context_expired');
+    return targetFetch(mobile.current.target, 120_000)(path, init);
+  }, []);
   const requestJob = useCallback(<T,>(path: string, init?: RequestInit): Promise<T> => {
     if (IS_CAPACITOR) {
       if (!mobile.current) throw new Error('marketplace_context_expired');
@@ -206,10 +227,11 @@ export function MarketplaceInstallDialog({
       toast.error(t("marketplaceInstall.openLinkInvalid"));
       return;
     }
-    void openExternalUrl(target).catch(() => {
+    const context = new URL(target);
+    void openMarketplaceWithAccount(desktopVersion, apiBaseUrl, context.searchParams.get("next") || "/", context.origin).catch(() => {
       toast.error(t("marketplaceInstall.openFailed"));
     });
-  }, [desktopVersion, prepare, restoreMobile, friendlyError, t]);
+  }, [desktopVersion, apiBaseUrl, prepare, restoreMobile, friendlyError, t]);
 
   useEffect(() => {
     if (!IS_TAURI && !IS_CAPACITOR) return;
@@ -228,6 +250,24 @@ export function MarketplaceInstallDialog({
     pendingOpenLinks.current.clear();
     pending.forEach(handleDeepLink);
   }, [desktopVersion, handleDeepLink]);
+
+  useEffect(() => {
+    if (job?.status !== "installed") return;
+    const eventName = {
+      skill: "openakita:skills-changed",
+      plugin: "openakita:plugin-apps-changed",
+      mcp: "openakita:mcp-changed",
+    }[job.resource_type];
+    if (!eventName) return;
+    const key = `${apiBaseUrl}/${job.id}`;
+    if (notifiedInstalls.current.has(key)) return;
+    notifiedInstalls.current.add(key);
+    // Installation has already refreshed the backend. Refresh local consumers even
+    // when the WebSocket is disconnected; repeated job responses need only one event.
+    window.dispatchEvent(new CustomEvent(eventName, {
+      detail: { action: "install" },
+    }));
+  }, [apiBaseUrl, job]);
 
   useEffect(() => {
     if (!open || !job || ["ready", "installed", "failed", "cancelled"].includes(job.status)) return;
@@ -251,16 +291,19 @@ export function MarketplaceInstallDialog({
     setActing(true);
     setErrorCode("");
     try {
-      setJob(await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(job.id)}/confirm`, { method: "POST" }));
+      const next = await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(job.id)}/confirm`, { method: "POST" });
+      setJob(next);
+      if (next.status === "ready") setErrorCode("marketplace_install_state_changed");
     } catch (error) {
       setErrorCode(error instanceof Error ? error.message : "marketplace_install_failed");
     } finally { setActing(false); }
   }
 
   const active = !!job && ["downloading", "verifying", "installing"].includes(job.status);
+  const canInstall = job?.status === "ready" && job.install_action !== "downgrade";
 
   const close = useCallback(async () => {
-    if (loading || acting || (active && !IS_CAPACITOR)) return;
+    if (loading || acting || pluginBusy || (active && !IS_CAPACITOR)) return;
     const current = job;
     setOpen(false);
     if (active) return;
@@ -271,19 +314,27 @@ export function MarketplaceInstallDialog({
     } catch {
       // The local service persists the pending cancellation and retries delivery.
     }
-  }, [active, requestJob, job, loading, acting]);
+  }, [active, requestJob, job, loading, acting, pluginBusy]);
 
   const statusLabel = job ? t(`marketplaceInstall.status.${job.status}`) : "";
+  let completionKey = job?.restart_required ? "completedRestart" : "completed";
+  if (job?.resource_type === "skill") {
+    if (job.skill_enabled === false) completionKey = "completedSkillDisabled";
+    else if (job.skill_enabled === true) {
+      completionKey = job.restart_required ? "completedSkillRestart" : "completedSkillEnabled";
+    } else completionKey = "completedSkillUnknown";
+  }
+  if (job?.already_installed) completionKey = job.installed_pending_restart ? "alreadyInstalledPending" : "alreadyInstalled";
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) void close(); }}>
-      <DialogContent overlayClassName="z-[1100]" className="z-[1100] sm:max-w-[520px] max-h-[85dvh] overflow-y-auto" showCloseButton={(!active || IS_CAPACITOR) && !loading && !acting}>
+      <DialogContent overlayClassName="z-[1100]" className="z-[1100] sm:max-w-[520px] max-h-[85dvh] overflow-y-auto" showCloseButton={(!active || IS_CAPACITOR) && !loading && !acting && !pluginBusy}>
         <DialogHeader>
           <DialogTitle className="flex items-start gap-2 pr-6 text-left">
             {job?.status === "installed" ? <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-500" size={22} /> : <PackageCheck className="mt-0.5 shrink-0 text-blue-600" size={22} />}
             <span className="min-w-0 break-words">{t("marketplaceInstall.title")}</span>
           </DialogTitle>
-          <DialogDescription>{job ? `${job.resource_name} · v${job.version}` : t("marketplaceInstall.connecting")}</DialogDescription>
+          <DialogDescription>{job ? `${job.resource_name} · ${job.install_action === "upgrade" ? `v${job.installed_version} → ` : ""}v${job.version}` : t("marketplaceInstall.connecting")}</DialogDescription>
         </DialogHeader>
 
         {IS_CAPACITOR && mobile.current && <div className="rounded-md border p-3 text-sm break-all">
@@ -301,14 +352,30 @@ export function MarketplaceInstallDialog({
             <div><span className="block text-muted-foreground">{t("marketplaceInstall.statusLabel")}</span><strong>{statusLabel}</strong></div>
           </div>
 
-          {active && <div className="space-y-2"><div className="flex justify-between text-sm"><span>{statusLabel}</span><span>{job.progress}%</span></div><div className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-blue-600 transition-[width] duration-300" style={{ width: `${job.progress}%` }} /></div></div>}
+          {active && <MarketplaceInstallProgress job={job} />}
 
-          {job.status === "ready" && <div className="space-y-3"><div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={18} className="text-emerald-600" />{t("marketplaceInstall.permissions")}</div>{job.permissions.length ? <div className="flex flex-wrap gap-2">{job.permissions.map((permission) => <span key={permission} className="rounded-md border bg-background px-2.5 py-1 text-xs">{permission}</span>)}</div> : <p className="text-sm text-muted-foreground">{t("marketplaceInstall.noPermissions")}</p>}</div>}
+          {job.status === "ready" && ["upgrade", "downgrade", "replace"].includes(job.install_action || "") && <p className="text-sm text-muted-foreground">{t(`marketplaceInstall.${job.install_action}Hint`, { current: job.installed_version, target: job.version })}</p>}
 
-          {job.status === "ready" && job.dependencies.length > 0 && <div className="space-y-3"><div className="text-sm font-medium">{t("marketplaceInstall.dependencies")}</div><div className="flex flex-wrap gap-2">{job.dependencies.map((dependency) => <span key={dependency} className="rounded-md border bg-background px-2.5 py-1 text-xs">{dependency}</span>)}</div></div>}
+          {canInstall && <div className="space-y-3"><div className="flex items-center gap-2 text-sm font-medium"><ShieldCheck size={18} className="text-emerald-600" />{t("marketplaceInstall.permissions")}</div>{job.permissions.length ? <div className="flex flex-wrap gap-2">{job.permissions.map((permission) => <span key={permission} className="rounded-md border bg-background px-2.5 py-1 text-xs">{permission}</span>)}</div> : <p className="text-sm text-muted-foreground">{t("marketplaceInstall.noPermissions")}</p>}</div>}
 
-          {job.status === "installed" && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">{t(job.restart_required ? "marketplaceInstall.completedRestart" : "marketplaceInstall.completed")}</div>}
-          {job.status === "failed" && <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{friendlyError(job.failure_code || "marketplace_install_failed")}</div>}
+          {canInstall && job.dependencies.length > 0 && <div className="space-y-3"><div className="text-sm font-medium">{t("marketplaceInstall.dependencies")}</div><div className="flex flex-wrap gap-2">{job.dependencies.map((dependency) => <span key={dependency} className="rounded-md border bg-background px-2.5 py-1 text-xs">{dependency}</span>)}</div></div>}
+
+          {canInstall && job.resource_type === "skill" && <p className="text-sm text-muted-foreground">{t("marketplaceInstall.skillActivationHint")}</p>}
+          {job.status === "installed" && job.resource_type !== "plugin" && <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-300">{t(`marketplaceInstall.${completionKey}`, { version: job.installed_version || job.version })}</div>}
+          {job.status === "installed" && job.resource_type === "plugin" && job.already_installed && !job.installed_pending_restart && <p className="text-sm text-muted-foreground">{t("marketplaceInstall.alreadyInstalled", { version: job.installed_version || job.version })}</p>}
+           {open && job.status === "installed" && job.resource_type === "plugin" && (!IS_CAPACITOR || (mobile.current && targetIsCurrent(mobile.current.target))) && <MarketplacePluginSetup
+            key={`${apiBaseUrl}/${job.id}`}
+             apiBaseUrl={apiBaseUrl} pluginId={job.plugin_id || job.resource_slug || ""}
+             request={IS_CAPACITOR ? requestPlugin : undefined}
+            onBusyChange={setPluginBusy} onClose={() => void close()}
+          />}
+          {job.status === "failed" && <div role="alert" className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            <p className="font-medium">{t(`marketplaceInstall.failureReasons.${job.failure_reason || "unknown"}`, { defaultValue: friendlyError(job.failure_code || "marketplace_install_failed") })}</p>
+            {(job.failure_stage || job.stage) && <p>{t("marketplaceInstall.failureStage", { stage: t(`marketplaceInstall.stages.${job.failure_stage || job.stage}`, { defaultValue: t("marketplaceInstall.status.installing") }) })}</p>}
+            {job.current_dependency && <p>{t("marketplaceInstall.lastDependency", { name: job.current_dependency })}</p>}
+            {job.failure_detail && <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-background/70 p-2 text-xs font-mono">{job.failure_detail}</pre>}
+            <p>{t(job.failure_reason === "dependency_network" ? "marketplaceInstall.networkRetryHint" : "marketplaceInstall.failureRetryHint")}</p>
+          </div>}
         </>}
 
         <DialogFooter>
@@ -325,8 +392,8 @@ export function MarketplaceInstallDialog({
             } catch { setErrorCode('marketplace_account_required'); }
             finally { setActing(false); }
           }}>{t('marketplaceInstall.loginAccount')}</Button>}
-          {(!active || IS_CAPACITOR) && !loading && !acting && <Button variant="outline" onClick={() => void close()}>{active ? t("marketplaceInstall.background") : job?.status === "installed" ? t("common.done", "完成") : t("common.cancel")}</Button>}
-          {job?.status === "ready" && <Button onClick={confirm} disabled={acting || loading || errorCode === "marketplace_target_changed"}><Download size={16} />{t("marketplaceInstall.install")}</Button>}
+          {(!active || IS_CAPACITOR) && !loading && !acting && !pluginBusy && !(job?.status === "installed" && job.resource_type === "plugin") && <Button variant="outline" onClick={() => void close()}>{active ? t("marketplaceInstall.background") : job?.status === "installed" ? t("common.done", "完成") : t("common.cancel")}</Button>}
+          {canInstall && <Button onClick={confirm} disabled={acting || loading || errorCode === "marketplace_target_changed"}><Download size={16} />{t(job.install_action === 'upgrade' ? 'marketplaceInstall.upgrade' : job.install_action === 'replace' ? 'marketplaceInstall.replace' : 'marketplaceInstall.install')}</Button>}
           {IS_CAPACITOR && errorCode && !loading && <Button variant="outline" onClick={() => { if (mobile.current) void restoreMobile(mobile.current); }}>{t('common.retry')}</Button>}
           {IS_CAPACITOR && ['marketplace_target_changed', 'marketplace_server_login_required'].includes(errorCode) && <Button onClick={onManageServers}>{t('marketplaceInstall.manageServers')}</Button>}
           {IS_CAPACITOR && ['marketplace_account_required', 'marketplace_account_mismatch', 'marketplace_instruction_unavailable', 'marketplace_install_not_found'].includes(errorCode) && <Button variant="outline" onClick={async () => {

@@ -20,6 +20,13 @@ Marketplace origin. Switching servers does not retarget an installation. The app
 offers connection management so the user can reconnect to the original server.
 Each request binds the original server credential and rejects redirects. A late
 response after a server switch cannot update the current installation UI.
+Installation routes accept either the local desktop credential or a validated
+explicit instance Bearer token. The desktop browser handoff route still requires
+the local desktop credential and cannot be used with the mobile instance token.
+
+Desktop and mobile use the same installation progress and plugin permission
+components. Download percentages reflect measured bytes; dependency operations
+show the active stage, package and elapsed time with indeterminate progress.
 
 The backend requests `/oauth/desktop-install-proof` from Account, using its stored
 refresh token. Despite its historical name, this existing protocol also supports

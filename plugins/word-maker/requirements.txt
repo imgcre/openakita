@@ -2,8 +2,7 @@ docxtpl
 python-docx
 aiosqlite
 
-# Optional source readers / exporters used by later phases:
-# openpyxl
-# python-pptx
-# pypdf
-
+# Source readers exposed by the shipped upload workflow:
+openpyxl
+python-pptx
+pypdf

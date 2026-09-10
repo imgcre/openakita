@@ -61,6 +61,7 @@ windows-sys = { version = "0.59", features = [
   # CreateFileW is gated by Win32_Security because its signature contains
   # SECURITY_ATTRIBUTES, even though crash_handler always passes NULL.
   "Win32_Security",
+  "Win32_Security_Cryptography",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Kernel",
   "Win32_System_Memory",

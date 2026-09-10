@@ -351,8 +351,8 @@ class LifecycleManager:
     ) -> int | dict:
         """处理未归纳的原文 → 生成 Episode → 提取语义记忆"""
         unextracted = self.store.get_unextracted_turns(limit=200)
-        if not unextracted:
-            return {"processed": 0, "partial": False} if deadline_monotonic else 0
+        # The retry queue can contain dropped/compressed turns even when the
+        # normal turn table is empty or fully extracted. Drain it below too.
 
         # v1.27.15 (S2 P1-6): drop ``preempted`` / ``aborted_partial``
         # markers before they reach the LLM-driven extractor.  These
@@ -387,9 +387,6 @@ class LifecycleManager:
                         _sid,
                         _exc,
                     )
-
-        if not _real_turns:
-            return {"processed": 0, "partial": False} if deadline_monotonic else 0
 
         by_session: dict[str, list[dict]] = defaultdict(list)
         for turn in _real_turns:
@@ -654,17 +651,21 @@ class LifecycleManager:
     # Deduplication
     # ==================================================================
 
+    @staticmethod
+    def _owner_key(memory: SemanticMemory) -> tuple[str, str, str, str]:
+        return (memory.scope, memory.scope_owner, memory.user_id, memory.workspace_id)
+
     async def deduplicate_batch(self) -> int:
         """基于聚类的批量去重"""
         all_memories = self.store.load_all_memories()
         if len(all_memories) < 2:
             return 0
 
-        by_type: dict[str, list[SemanticMemory]] = defaultdict(list)
+        by_type: dict[tuple, list[SemanticMemory]] = defaultdict(list)
         for mem in all_memories:
             if mem.superseded_by:
                 continue
-            by_type[mem.type.value].append(mem)
+            by_type[(*self._owner_key(mem), mem.type.value)].append(mem)
 
         deleted = 0
         for _mem_type, group in by_type.items():
@@ -1115,8 +1116,18 @@ class LifecycleManager:
                         elif action == "merge":
                             target_id = dec.get("merged_with")
                             new_content = dec.get("new_content")
-                            if target_id and new_content:
-                                self.store.update_semantic(target_id, {"content": new_content})
+                            target = (
+                                self.store.get_semantic(target_id)
+                                if isinstance(target_id, str) and target_id in batch_ids
+                                else None
+                            )
+                            if (
+                                target is not None
+                                and target.id != mem.id
+                                and new_content
+                                and self._owner_key(target) == self._owner_key(mem)
+                                and self.store.update_semantic(target_id, {"content": new_content})
+                            ):
                                 self.store.delete_semantic(mem.id)
                                 report["merged"] += 1
                             else:

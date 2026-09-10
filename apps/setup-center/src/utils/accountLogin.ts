@@ -45,6 +45,11 @@ export type AccountCapability = {
 };
 
 let activeLogin: Promise<AccountStatusSummary> | null = null;
+let accountGeneration = 0;
+export function getAccountGeneration() { return accountGeneration; }
+function requireCurrentGeneration(generation: number) {
+  if (generation !== accountGeneration) throw new Error('account_operation_superseded');
+}
 let activeLoginBase: string | null = null;
 let nativeRecovery: Promise<AccountStatusSummary | null> | null = null;
 let nativeRecoveryBase: string | null = null;
@@ -100,6 +105,7 @@ function createLoginPollWaiter(signal?: AbortSignal) {
 async function runAccountLogin(
   apiBaseUrl: string,
   options: AccountLoginOptions,
+  generation: number,
 ): Promise<AccountStatusSummary> {
   let attempt: LoginStart | undefined;
   let popup: Window | null = null;
@@ -108,6 +114,7 @@ async function runAccountLogin(
   let completed = false;
   const pollWaiter = createLoginPollWaiter(options.signal);
   const checkCancelled = () => {
+    requireCurrentGeneration(generation);
     if (options.signal?.aborted) throw new Error("account_login_cancelled");
   };
   try {
@@ -176,7 +183,7 @@ async function runAccountLogin(
       const result = await poll.json() as LoginProgress;
       if (result.status === "complete") {
         completed = true;
-        return await loadAndPublishAccountStatus(apiBaseUrl);
+        return await loadAndPublishAccountStatus(apiBaseUrl, generation, options.signal);
       }
       if (["failed", "expired", "cancelled"].includes(result.status)) {
         throw new Error(result.error || "account_login_expired");
@@ -193,7 +200,7 @@ async function runAccountLogin(
         // Authorization may finish while cancellation is in flight. Reflect
         // the actual backend session instead of leaving the UI signed out.
         if ((await cancellation.json() as LoginProgress).status === "complete") {
-          return await loadAndPublishAccountStatus(apiBaseUrl);
+          return await loadAndPublishAccountStatus(apiBaseUrl, generation);
         }
       } catch { /* The backend also expires attempts if it is unreachable. */ }
     }
@@ -207,9 +214,11 @@ async function runAccountLogin(
   }
 }
 
-async function loadAndPublishAccountStatus(apiBaseUrl: string, signal?: AbortSignal): Promise<AccountStatusSummary> {
+async function loadAndPublishAccountStatus(apiBaseUrl: string, generation: number, signal?: AbortSignal): Promise<AccountStatusSummary> {
+  requireCurrentGeneration(generation);
   const statusResponse = await safeFetch(`${apiBaseUrl}/api/account/status`);
   const snapshot = await statusResponse.json() as AccountStatusSummary;
+  requireCurrentGeneration(generation);
   if (signal?.aborted) throw new Error('account_login_cancelled');
   dispatchAccountStatusChanged(snapshot);
   return snapshot;
@@ -229,6 +238,7 @@ export function connectOpenAkitaAccount(
       ? snapshot : connectOpenAkitaAccount(apiBaseUrl, options));
   }
 
+  const generation = ++accountGeneration;
   const operation = IS_CAPACITOR ? (async () => {
     options.onNativePreparing?.();
     const { runNativeAccountLogin, readNativeAccountStatus } = await import('../platform/nativeAccountAuth');
@@ -236,9 +246,10 @@ export function connectOpenAkitaAccount(
     if (options.signal?.aborted) throw new Error('account_login_cancelled');
     const snapshot = await readNativeAccountStatus(apiBaseUrl, options.signal);
     if (options.signal?.aborted) throw new Error('account_login_cancelled');
+    requireCurrentGeneration(generation);
     dispatchAccountStatusChanged(snapshot);
     return snapshot;
-  })() : runAccountLogin(apiBaseUrl, options);
+  })() : runAccountLogin(apiBaseUrl, options, generation);
   activeLogin = operation;
   activeLoginBase = apiBaseUrl;
   const clearOperation = () => {
@@ -254,13 +265,15 @@ export async function watchNativeAccountLogin(apiBaseUrl: string, onRestored: (s
   const abort = new AbortController();
   const stop = await watchNativeAccountResults(() => {
     if (activeLogin || nativeRecovery || abort.signal.aborted) return;
+    const generation = accountGeneration;
     const operation = (async () => {
       if (!await recoverNativeAccountLogin(apiBaseUrl, abort.signal) || abort.signal.aborted) {
         return null;
       }
       const snapshot = await readNativeAccountStatus(apiBaseUrl, abort.signal);
       if (abort.signal.aborted) return null;
-      dispatchAccountStatusChanged(snapshot);
+      requireCurrentGeneration(generation);
+    dispatchAccountStatusChanged(snapshot);
       return snapshot;
     })();
     nativeRecovery = operation;
@@ -278,13 +291,16 @@ export async function watchNativeAccountLogin(apiBaseUrl: string, onRestored: (s
 export async function refreshOpenAkitaAccountEntitlements(
   apiBaseUrl: string,
 ): Promise<AccountStatusSummary> {
+  const generation = accountGeneration;
   await safeFetch(`${apiBaseUrl}/api/account/entitlements/refresh`, { method: "POST" });
-  return loadAndPublishAccountStatus(apiBaseUrl);
+  return loadAndPublishAccountStatus(apiBaseUrl, generation);
 }
 
 export async function disconnectOpenAkitaAccount(
   apiBaseUrl: string,
 ): Promise<AccountStatusSummary> {
+  const generation = ++accountGeneration;
+  activeLogin = null;
   await safeFetch(`${apiBaseUrl}/api/account/logout`, { method: "POST" });
-  return loadAndPublishAccountStatus(apiBaseUrl);
+  return loadAndPublishAccountStatus(apiBaseUrl, generation);
 }

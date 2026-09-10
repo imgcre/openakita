@@ -1116,6 +1116,7 @@ class TaskExecutor:
                     embedding_api_provider=settings.embedding_api_provider,
                     embedding_api_key=settings.embedding_api_key,
                     embedding_api_model=settings.embedding_api_model,
+                    desktop_owner_alignment=True,
                 )
                 logger.debug("Created fallback MemoryManager for consolidation")
 
