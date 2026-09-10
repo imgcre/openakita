@@ -10,12 +10,12 @@ export type WebInstallContext = {
 function read(): WebInstallContext | null {
   try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { return null; }
 }
-function write(value: WebInstallContext) { sessionStorage.setItem(KEY, JSON.stringify(value)); }
+function write(value: WebInstallContext, storage = sessionStorage) { storage.setItem(KEY, JSON.stringify(value)); }
 const baseUrl = (base: string) => new URL(base || location.origin, location.origin).href.replace(/\/+$/, '');
 
-/** Same-tab navigation preserves the instance login in its own origin. No
+/** Navigation preserves the instance login in its own origin. No
  * instance credentials or API address are sent to the storefront. */
-export function buildWebMarketplaceUrl(version: string, base: string, next = '/', origin?: string) {
+export function buildWebMarketplaceUrl(version: string, base: string, next = '/', origin?: string, storage = sessionStorage) {
   const page = new URL(location.href);
   if (!['https:', 'http:'].includes(page.protocol) || page.username || page.password) {
     throw new Error('marketplace_instruction_invalid');
@@ -23,13 +23,34 @@ export function buildWebMarketplaceUrl(version: string, base: string, next = '/'
   // getRandomValues also works on LAN HTTP, where randomUUID is unavailable.
   const state = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
   const url = new URL(buildMarketplaceContextUrl(version, next, origin));
-  write({ state, base: baseUrl(base), endpoint: url.origin, returnUrl: page.href, expires: Date.now() + TTL });
-  sessionStorage.removeItem(ERROR_KEY);
+  write({ state, base: baseUrl(base), endpoint: url.origin, returnUrl: page.href, expires: Date.now() + TTL }, storage);
+  storage.removeItem(ERROR_KEY);
   page.search = ''; page.hash = '';
   url.searchParams.set('client', 'web');
   url.searchParams.set('state', state);
   url.searchParams.set('return_url', page.href);
   return url.href;
+}
+
+export function openWebMarketplace(version: string, next: string, origin: string | undefined, newTab: boolean) {
+  // Web uses the page's service, even if a caller still holds native loopback
+  // connection state. Keep validation on return strict; never rewrite old targets.
+  const tab = newTab ? window.open('about:blank', '_blank') : null;
+  if (!tab) {
+    location.assign(buildWebMarketplaceUrl(version, location.origin, next, origin));
+    return;
+  }
+  try {
+    // Seed the new tab while it is same-origin. Opening the external URL with
+    // noopener immediately would leave the returning tab without its context.
+    // Each market tab owns a separate state, so concurrent returns stay isolated.
+    const url = buildWebMarketplaceUrl(version, location.origin, next, origin, tab.sessionStorage);
+    tab.opener = null;
+    tab.location.replace(url);
+  } catch (error) {
+    tab.close();
+    throw error;
+  }
 }
 
 /** Capture before routing/login can replace the hash. Persist before removing

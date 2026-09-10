@@ -55,9 +55,15 @@ cannot silently choose a server.
 
 ## Remote Web installation
 
-The Web interface opens Marketplace in the same browser tab with `client=web`.
+The Web interface opens Marketplace with `client=web`. Mobile browsers navigate
+in the same tab. Desktop browsers open a new tab, keeping the original OpenAkita
+page available; installation confirmation appears in the returning new tab.
+The new tab receives its own session context while still same-origin, then drops
+its opener before navigating to Marketplace. If popups are blocked, navigation
+falls back to the current tab. No cross-origin opener or message relay is needed.
 Its per-tab context lasts 30 minutes and contains a random state, the original
-Web page and the target API base. Marketplace receives only the clean Web return
+Web page and the target API base. Web targets always use the page's origin,
+independently of native desktop connection state. Marketplace receives only the clean Web return
 address (origin and path), state and version. The original query/hash and instance
 credentials stay in OpenAkita's origin. State generation uses `getRandomValues`,
 which is available on LAN HTTP pages as well as HTTPS pages.

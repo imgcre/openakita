@@ -2005,7 +2005,10 @@ function MainApp() {
   }
 
   function httpApiBase(): string {
-    if (IS_WEB || IS_CAPACITOR) return apiBaseUrl || window.location.origin;
+    // A browser Web session belongs to the server that served the page. Native
+    // connection state (including a desktop loopback default) must not retarget it.
+    if (IS_WEB) return window.location.origin;
+    if (IS_CAPACITOR) return apiBaseUrl || window.location.origin;
     return dataMode === "remote" ? apiBaseUrl : "http://127.0.0.1:18900";
   }
 

@@ -1,10 +1,10 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { buildWebMarketplaceUrl, captureWebInstallReturn, pendingWebInstall, saveWebInstallJob, dismissWebInstall } from '../web';
+import { buildWebMarketplaceUrl, openWebMarketplace, captureWebInstallReturn, pendingWebInstall, saveWebInstallJob, dismissWebInstall } from '../web';
 
 const endpoint = 'https://marketplace.openakita.cn';
 const token = 'a'.repeat(64);
 beforeEach(() => { sessionStorage.clear(); history.replaceState(null, '', '/proxy/web?local=value#plugins'); });
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 function returnFromMarket(state: string, overrides: Record<string, string> = {}) {
   history.replaceState(null, '', '/proxy/web#' + new URLSearchParams({ 'openakita-install': token, state, endpoint, ...overrides }));
   captureWebInstallReturn();
@@ -48,4 +48,36 @@ it('rejects an installation link opened in a different tab without originating c
   returnFromMarket('b'.repeat(64));
   expect(() => pendingWebInstall(location.origin)).toThrow('marketplace_context_expired');
   expect(location.hash).toBe('');
+});
+
+it('gives desktop market tabs independent return contexts and detaches the opener', () => {
+  const parent = new URL(buildWebMarketplaceUrl('1.27.40', location.origin));
+  const tabs: { sessionStorage: Storage; opener: unknown; location: { replace: ReturnType<typeof vi.fn> }; close: ReturnType<typeof vi.fn> }[] = [];
+  vi.spyOn(window, 'open').mockImplementation(() => {
+    const values = new Map<string, string>();
+    const tab = {
+      sessionStorage: { getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+        get length() { return values.size; }, clear: () => values.clear(),
+        key: (index: number) => [...values.keys()][index] ?? null },
+      opener: window as unknown,
+      location: { replace: vi.fn(() => expect(tab.opener).toBeNull()) }, close: vi.fn(),
+    };
+    tabs.push(tab);
+    return tab as unknown as Window;
+  });
+  openWebMarketplace('1.27.40', '/', undefined, true);
+  openWebMarketplace('1.27.40', '/catalog', undefined, true);
+  const contexts = tabs.map(tab => JSON.parse(tab.sessionStorage.getItem('openakita.marketplace.web.v1')!));
+  expect(contexts[0].state).not.toBe(contexts[1].state);
+  for (let index = 0; index < tabs.length; index++) {
+    const url = new URL(tabs[index].location.replace.mock.calls[0][0]);
+    expect(contexts[index].base).toBe(location.origin);
+    expect(contexts[index].state).toBe(url.searchParams.get('state'));
+    expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web');
+  }
+  // Opening new tabs must not overwrite a pending installation in the original.
+  returnFromMarket(parent.searchParams.get('state')!);
+  expect(pendingWebInstall(location.origin)?.token).toBe(token);
 });
