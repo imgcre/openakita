@@ -84,6 +84,7 @@ def test_signed_out_native_opens_public_marketplace(monkeypatch):
 
 def test_install_job_routes_require_native_process_secret(monkeypatch):
     web, _ = client(monkeypatch)
+    assert web.get("/api/marketplace/installs").status_code == 403
     assert web.get("/api/marketplace/installs/job").status_code == 403
     assert web.post("/api/marketplace/installs/job/cancel").status_code == 403
     assert web.post("/api/marketplace/installs/job/confirm").status_code == 403
@@ -91,6 +92,21 @@ def test_install_job_routes_require_native_process_secret(monkeypatch):
         "/api/marketplace/installs/prepare",
         json={"token": "a" * 64, "endpoint": "https://marketplace.openakita.cn"},
     ).status_code == 403
+
+
+def test_install_history_accepts_valid_instance_token(monkeypatch):
+    web, _ = client(monkeypatch)
+    web.app.state.web_access_config = SimpleNamespace(
+        validate_access_token=lambda value: value == "instance-access"
+    )
+    web.app.state.marketplace_install_manager = SimpleNamespace(
+        list_jobs=lambda: [{"id": "job", "status": "installing"}]
+    )
+    response = web.get(
+        "/api/marketplace/installs", headers={"Authorization": "Bearer instance-access"}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == [{"id": "job", "status": "installing"}]
 
 
 def test_mobile_install_requires_valid_explicit_instance_token(monkeypatch):

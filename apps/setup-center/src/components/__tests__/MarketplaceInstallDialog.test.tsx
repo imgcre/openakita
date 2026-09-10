@@ -27,6 +27,7 @@ const job = {
 };
 
 beforeEach(async () => {
+  localStorage.clear();
   vi.clearAllMocks();
   vi.mocked(safeFetchResponse).mockReset();
   vi.mocked(safeFetch).mockReset();

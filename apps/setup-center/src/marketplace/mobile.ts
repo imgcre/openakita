@@ -2,6 +2,7 @@ import { getAccessToken } from '../platform/auth';
 import { IS_CAPACITOR } from '../platform/detect';
 import { getActiveServer } from '../platform/servers';
 import { buildMarketplaceContextUrl, hasMarketplaceClientVersion, marketplaceOrigin } from './navigation';
+import { getInstallTasks, taskKey } from './installTasks';
 
 const KEY = 'openakita.marketplace.mobile.v1';
 const TTL = 8 * 60 * 60_000;
@@ -16,6 +17,11 @@ function read(): Saved {
   return { targets: [] };
 }
 function write(value: Saved) { localStorage.setItem(KEY, JSON.stringify(value)); }
+function needsPendingRecovery(pending?: PendingInstall) {
+  if (!pending || pending.dismissed) return false;
+  const tracked = pending.jobId && getInstallTasks().find(t => t.key === taskKey(pending.target.base, pending.jobId!));
+  return !tracked || tracked.job.status === 'ready';
+}
 export function pendingInstall() { return read().pending; }
 export function saveInstall(value: PendingInstall) {
   const saved = read(); saved.pending = value; write(saved);
@@ -89,7 +95,7 @@ export function acceptMobileInstall(raw: string): PendingInstall | null {
   if (!target) throw new Error('marketplace_context_expired');
   const key = `${target.state}:${token}`;
   if (saved.pending?.key === key) return saved.pending;
-  if (saved.pending && !saved.pending.dismissed) throw new Error('marketplace_install_busy');
+  if (needsPendingRecovery(saved.pending)) throw new Error('marketplace_install_busy');
   const pending = { target, endpoint, token, key };
   saveInstall(pending);
   return pending;
@@ -102,7 +108,7 @@ export async function openMarketplace(version: string, next = '/') {
     return openExternalUrl(url.href);
   }
   const saved = read();
-  if (saved.pending && !saved.pending.dismissed) {
+  if (needsPendingRecovery(saved.pending)) {
     window.dispatchEvent(new Event('openakita-marketplace-resume'));
     return;
   }
@@ -130,7 +136,7 @@ export async function openMarketplace(version: string, next = '/') {
   } catch { throw new Error('marketplace_native_unavailable'); }
   if (!targetIsCurrent(target)) throw new Error('marketplace_target_changed');
   const latest = read();
-  if (latest.pending && !latest.pending.dismissed) {
+  if (needsPendingRecovery(latest.pending)) {
     window.dispatchEvent(new Event('openakita-marketplace-resume'));
     return;
   }

@@ -121,6 +121,7 @@ import { ModalOverlay } from "./components/ModalOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { AppUpdateDialog, UpdateProgressToast } from "./components/AppUpdateDialog";
+import { INSTALL_TASK_OPEN } from './marketplace/installTasks';
 import { MarketplaceInstallDialog } from "./components/MarketplaceInstallDialog";
 import { useNotifications } from "./hooks/useNotifications";
 import { notifySuccess, notifyError, notifyLoading, dismissLoading } from "./utils/notify";
@@ -519,6 +520,12 @@ function MainApp() {
   const [inboxRefreshKey, setInboxRefreshKey] = useState(0);
   const [inboxDialogOpen, setInboxDialogOpen] = useState(false);
   const [inboxUnreadCount, setInboxUnreadCount] = useState(0);
+  useEffect(() => {
+    const revealInstall = () => { setInboxDialogOpen(false); setMobileSidebarOpen(false); };
+    window.addEventListener(INSTALL_TASK_OPEN, revealInstall);
+    return () => window.removeEventListener(INSTALL_TASK_OPEN, revealInstall);
+  }, []);
+
   const [unreadFeedbackCount, setUnreadFeedbackCount] = useState(0);
   const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const [disabledViews, setDisabledViews] = useState<string[]>([]);
@@ -4902,6 +4909,7 @@ function MainApp() {
         <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
         <Toaster position="top-right" richColors closeButton />
         <MarketplaceInstallDialog
+          discoverTasks
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
           onManageServers={() => setShowServerManager(true)}
@@ -5473,6 +5481,7 @@ function MainApp() {
         />
         <Toaster position="top-right" richColors closeButton />
         <MarketplaceInstallDialog
+          discoverTasks
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
           onManageServers={() => setShowServerManager(true)}

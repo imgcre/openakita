@@ -5,6 +5,7 @@ import { Button } from "./ui/button";
 import { safeFetchResponse } from "../providers";
 import { decodeRuntimeOperationResponse } from "../utils/runtimeOperation";
 import { permLabel } from "../plugins/permissions";
+import { pluginSetupState, type PluginSetupState } from '../marketplace/installTasks';
 
 interface InstalledPlugin {
   id: string;
@@ -15,11 +16,12 @@ interface InstalledPlugin {
   error?: string;
 }
 
-export function MarketplacePluginSetup({ apiBaseUrl, pluginId, onBusyChange, onClose, request: boundRequest }: {
+export function MarketplacePluginSetup({ apiBaseUrl, pluginId, onBusyChange, onClose, onStateChange, request: boundRequest }: {
   apiBaseUrl: string;
   pluginId: string;
   onBusyChange: (busy: boolean) => void;
   onClose: () => void;
+  onStateChange?: (state: PluginSetupState) => void;
   request?: (path: string, init?: RequestInit) => Promise<Response>;
 }) {
   const { t, i18n } = useTranslation();
@@ -109,6 +111,9 @@ export function MarketplacePluginSetup({ apiBaseUrl, pluginId, onBusyChange, onC
   const state = staged ? "staged" : pending.length ? "permissions" : disabled ? "disabled" : ready ? "ready" : "notLoaded";
   const primary = !plugin || error ? "check" : staged ? "reload" : pending.length ? "grant" : disabled ? "enable" : "reload";
   const label = { check: "retry", reload: staged ? disabled ? "enableUpdate" : "applyUpdate" : "load", grant: "grant", enable: "enable" }[primary];
+  useEffect(() => {
+    if (!busy) onStateChange?.(error || notice ? 'notLoaded' : pluginSetupState(plugin || undefined));
+  }, [busy, plugin, error, notice, onStateChange]);
 
   return <div className="space-y-4">
     {busy ? <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -124,6 +129,9 @@ export function MarketplacePluginSetup({ apiBaseUrl, pluginId, onBusyChange, onC
     </ul>}
     {(error || notice || plugin?.error) && <p role="alert" className="break-words text-sm text-destructive">{error || notice || plugin?.error}</p>}
     <div className="flex justify-end gap-2">
+      {!busy && disabled && !staged && !pending.length && onStateChange && <Button variant="outline" onClick={() => {
+        onStateChange('keptDisabled'); onClose();
+      }}>{t('marketplaceInstall.tasks.keepDisabled')}</Button>}
       <Button variant="outline" disabled={busy} onClick={onClose}>{t(ready && !error && !notice ? "marketplaceInstall.pluginSetup.done" : "marketplaceInstall.pluginSetup.later")}</Button>
       {!busy && (!ready || !!error) && <Button onClick={() => void act(primary)}>{t(`marketplaceInstall.pluginSetup.${label}`)}</Button>}
     </div>

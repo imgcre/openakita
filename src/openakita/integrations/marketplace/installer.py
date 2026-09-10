@@ -171,6 +171,17 @@ class MarketplaceInstallManager:
             await self._flush_terminal_report(job)
         return self._public(job)
 
+    def list_jobs(self) -> list[dict[str, Any]]:
+        """Restore progress without exposing instruction or package credentials."""
+        jobs = sorted(
+            self._jobs.values(),
+            key=lambda job: job.get("started_at", job.get("created_at", 0)),
+            reverse=True,
+        )
+        active = [job for job in jobs if job.get("status") not in TERMINAL_STATUSES]
+        recent = [job for job in jobs if job.get("status") in TERMINAL_STATUSES][:50]
+        return [self._public(job) for job in active + recent]
+
     @staticmethod
     def _public(job: dict[str, Any]) -> dict[str, Any]:
         hidden = {"token", "download_url", "signature", "verification"}
@@ -217,6 +228,7 @@ class MarketplaceInstallManager:
                 "token": token,
                 "endpoint": endpoint,
                 "status": "ready",
+                "created_at": time.time(),
                 "progress": 0,
                 "resource_id": payload["resource_id"],
                 "resource_name": payload["resource_name"],

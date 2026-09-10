@@ -55,6 +55,12 @@ async def prepare_install(body: PrepareBody, request: Request):
         raise _error(exc) from exc
 
 
+@router.get("/installs")
+async def list_installs(request: Request):
+    require_marketplace_access(request)
+    return {"data": _manager(request).list_jobs()}
+
+
 @router.get("/installs/{job_id}")
 async def get_install(job_id: str, request: Request):
     require_marketplace_access(request)

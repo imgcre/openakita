@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { safeFetch } from "../providers";
+import { useTranslation } from 'react-i18next';
+import { needsInstallAttention, useInstallTasks } from '../marketplace/installTasks';
 
 export const INBOX_UNREAD_CHANGED_EVENT = "openakita:inbox-unread-changed";
 export const INBOX_REFRESH_EVENT = "openakita:inbox-refresh";
@@ -15,6 +17,9 @@ type InboxRefreshDetail = {
 };
 
 export function InboxBadge({ apiBaseUrl, serviceRunning, countOverride }: InboxBadgeProps) {
+  const { t } = useTranslation();
+  const tasks = useInstallTasks();
+  const attention = tasks.filter(needsInstallAttention).length;
   const [count, setCount] = useState(0);
 
   const fetchUnread = useCallback(async () => {
@@ -64,11 +69,11 @@ export function InboxBadge({ apiBaseUrl, serviceRunning, countOverride }: InboxB
     };
   }, [fetchUnread]);
 
-  if (count <= 0) return null;
+  if (count <= 0 && !attention) return null;
 
   return (
-    <span className="navBadge" aria-label={`${count} unread inbox messages`}>
-      {count > 99 ? "99+" : count}
+    <span className="navBadge" aria-label={attention ? t('marketplaceInstall.tasks.attentionCount', { count: attention }) : `${count} unread inbox messages`}>
+      {attention ? '!' : count > 99 ? "99+" : count}
     </span>
   );
 }
