@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "../../i18n";
 import { Sidebar } from "../Sidebar";
 import { connectOpenAkitaAccount, loadAccountCapability } from "../../utils/accountLogin";
+import { INSTALL_TASK_OPEN, patchInstall, trackInstall } from '../../marketplace/installTasks';
 
 vi.mock("../../utils/accountLogin", () => ({
   getAccountGeneration: () => 0,
@@ -49,8 +50,31 @@ function renderSidebar(onCloseMobile?: () => void) {
 
 describe("Sidebar account distribution mode", () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("[]", { status: 200 })));
+  });
+
+  it('recovers hidden work from the existing menu and removes the entry after completion', async () => {
+    vi.mocked(loadAccountCapability).mockResolvedValue({ enabled: false, mode: 'disabled', provider: null,
+      display_name: null, supports_entitlements: false });
+    const job = { id: 'current', status: 'installing' as const, resource_type: 'skill' as const,
+      resource_name: 'Current skill', progress: null, version: '1', permissions: [], dependencies: [] };
+    const task = trackInstall('http://localhost:18900', job);
+    patchInstall(task.key, { hidden: true, background: true });
+    const closeSidebar = vi.fn();
+    renderSidebar(closeSidebar);
+    fireEvent.click(await screen.findByRole('button', { name: /应用菜单|App menu/i }));
+    const open = vi.fn();
+    window.addEventListener(INSTALL_TASK_OPEN, open);
+    try {
+      fireEvent.click(screen.getByRole('menuitem', { name: /继续安装|Resume installation/ }));
+      expect(open).toHaveBeenCalledOnce();
+      expect(closeSidebar).toHaveBeenCalledOnce();
+      act(() => { trackInstall('http://localhost:18900', { ...job, status: 'installed' }); });
+      fireEvent.click(screen.getByRole('button', { name: /应用菜单|App menu/i }));
+      expect(screen.queryByRole('menuitem', { name: /继续安装|Resume installation/ })).toBeNull();
+    } finally { window.removeEventListener(INSTALL_TASK_OPEN, open); }
   });
 
   it("closes mobile navigation during device preparation and keeps login alive until cancelled", async () => {

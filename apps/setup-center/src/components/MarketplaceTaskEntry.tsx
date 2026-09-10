@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, CheckCircle2, ChevronRight, Loader2, PackageCheck, ShieldCheck, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { needsInstallAttention, openInstallTask, patchInstall, taskPhase, useInstallTasks, type InstallTask } from '../marketplace/installTasks';
+import { needsInstallAttention, openInstallTask, patchInstall, taskPhase, type InstallTask } from '../marketplace/installTasks';
 import { MarketplaceInstallProgress } from './MarketplaceInstallProgress';
 import './MarketplaceTaskEntry.css';
 
@@ -32,14 +32,15 @@ function StatusIcon({ phase }: { phase: string }) {
   return <PackageCheck size={18} />;
 }
 
-/** Shared by the floating panel and Inbox; reading never resolves pending setup. */
+/** Only the current working set is passed in; reading never resolves setup. */
 export function MarketplaceTaskList({ tasks, onSelect = task => openInstallTask(task.key) }: {
   tasks: InstallTask[]; onSelect?: (task: InstallTask) => void;
 }) {
   const { t } = useTranslation();
-  const ordered = [...tasks].sort((a, b) => Number(needsInstallAttention(b)) - Number(needsInstallAttention(a)) ||
-    Number(taskPhase(b) === 'installing') - Number(taskPhase(a) === 'installing') || b.changedAt - a.changedAt);
+  const ordered = [...tasks].sort((a, b) => Number(taskPhase(b) === 'installing') - Number(taskPhase(a) === 'installing') ||
+    Number(needsInstallAttention(b)) - Number(needsInstallAttention(a)) || b.changedAt - a.changedAt);
   return <div className="install-task-list">
+    {!ordered.length && <p className="text-sm text-muted-foreground">{t('marketplaceInstall.tasks.empty')}</p>}
     {ordered.map(task => {
       const phase = taskPhase(task);
       return <div key={task.key} className="install-task-row" data-phase={phase}>
@@ -56,16 +57,6 @@ export function MarketplaceTaskList({ tasks, onSelect = task => openInstallTask(
       </div>;
     })}
   </div>;
-}
-
-export function MarketplaceTaskInbox() {
-  const tasks = useInstallTasks();
-  const { t } = useTranslation();
-  if (!tasks.length) return null;
-  return <section className="install-task-inbox" aria-label={t('marketplaceInstall.tasks.title')}>
-    <h2>{t('marketplaceInstall.tasks.title')}</h2>
-    <MarketplaceTaskList tasks={tasks} />
-  </section>;
 }
 
 export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; onOpen: () => void }) {

@@ -14,6 +14,7 @@ import {
 } from "../icons";
 import logoUrl from "../assets/logo.png";
 import { AccountDeviceLoginDialog } from "./AccountDeviceLoginDialog";
+import { currentInstallTasks, openInstallTask, useInstallTasks } from '../marketplace/installTasks';
 import { safeFetch } from "../providers";
 import {
   ACCOUNT_STATUS_CHANGED_EVENT,
@@ -149,6 +150,8 @@ export function Sidebar({
 
   const [pluginApps, setPluginApps] = useState<PluginUIApp[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const installTasks = useInstallTasks();
+  const hasInstallTasks = currentInstallTasks(installTasks, httpApiBase || 'http://127.0.0.1:18900').length > 0;
   const [accountCapability, setAccountCapability] = useState<AccountCapability | null>(null);
   const [accountSnapshot, setAccountSnapshot] = useState<AccountStatusSummary | null>(null);
   const [accountLoginPending, setAccountLoginPending] = useState(false);
@@ -744,6 +747,14 @@ export function Sidebar({
               </div>
             )}
             {accountEnabled && <div className="sidebarAccountMenuDivider" />}
+            {hasInstallTasks && <button type="button" className="sidebarAccountMenuItem" role="menuitem"
+              onClick={() => selectAccountMenuItem(() => {
+                onCloseMobile?.();
+                openInstallTask();
+              })}>
+              <IconPuzzle size={17} />
+              <span>{t('marketplaceInstall.tasks.resume')}</span>
+            </button>}
             {accountNeedsSync && (
               <button
                 type="button"

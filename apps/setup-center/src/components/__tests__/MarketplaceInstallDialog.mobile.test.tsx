@@ -9,7 +9,6 @@ vi.mock('../../platform', () => ({ IS_CAPACITOR: true, IS_TAURI: false,
   getCurrentDeepLinks: async () => [], onDeepLinkOpen: async () => () => {}, openExternalUrl: vi.fn() }));
 import { MarketplaceInstallDialog } from '../MarketplaceInstallDialog';
 import { saveInstall, pendingInstall } from '../../marketplace/mobile';
-import { MarketplaceTaskInbox } from '../MarketplaceTaskEntry';
 import { getInstallTasks, openInstallTask, patchInstall, taskPhase } from '../../marketplace/installTasks';
 const baseJob = { id: 'job', status: 'ready', resource_name: 'Test Skill', resource_type: 'skill', version: '1.0.0', permissions: ['network'], dependencies: [], progress: 0 };
 beforeEach(async () => {
@@ -83,7 +82,7 @@ it('keeps authorization failures actionable and retries the same instruction', a
   expect(attempts).toBe(2);
 });
 
-it('continues polling after backgrounding, retains pending permissions when hidden and resumes from Inbox', async () => {
+it('continues polling after backgrounding, retains pending permissions when hidden and resumes through the app menu action', async () => {
   let installed = false;
   let granted = false;
   const calls: string[] = [];
@@ -96,7 +95,7 @@ it('continues polling after backgrounding, retains pending permissions when hidd
     return new Response(JSON.stringify({ data: { ...baseJob, resource_type: 'plugin', plugin_id: 'ppt',
       status: installed ? 'installed' : 'installing' } }));
   }));
-  render(<><MarketplaceInstallDialog {...props} /><MarketplaceTaskInbox /></>);
+  render(<><MarketplaceInstallDialog {...props} /><button onClick={() => openInstallTask()}>Resume installation</button></>);
   await screen.findByText('Test Skill · v1.0.0');
   fireEvent.click(screen.getByRole('button', { name: i18n.t('marketplaceInstall.background') }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
@@ -108,7 +107,8 @@ it('continues polling after backgrounding, retains pending permissions when hidd
   fireEvent.click(screen.getByRole('button', { name: i18n.t('marketplaceInstall.tasks.hide') }));
   expect(getInstallTasks()[0].hidden).toBe(true);
   expect(taskPhase(getInstallTasks()[0])).toBe('permissions');
-  fireEvent.click(screen.getByRole('button', { name: /Test Skill.*Needs permission.*Review permissions/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Resume installation' }));
+  fireEvent.click(await screen.findByRole('button', { name: /Test Skill.*Needs permission.*Review permissions/ }));
   await screen.findByRole('dialog');
   fireEvent.click(await screen.findByRole('button', { name: i18n.t('marketplaceInstall.pluginSetup.grant') }));
   await waitFor(() => expect(taskPhase(getInstallTasks()[0])).toBe('complete'));
@@ -156,4 +156,19 @@ it('does not reopen an acknowledged completed installation on the next app launc
   render(<MarketplaceInstallDialog {...props} />);
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(getInstallTasks()).toHaveLength(1);
+});
+
+it('does not import server history or resurrect it through the old mobile pending pointer', async () => {
+  const oldJob = { ...baseJob, id: 'yesterday', status: 'installed', resource_type: 'plugin', plugin_id: 'old-plugin' };
+  saveInstall({ ...pendingInstall()!, token: undefined, jobId: oldJob.id });
+  const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify({ data:
+    url.endsWith('/installs') ? [oldJob, { ...oldJob, id: 'old-completed' }] : oldJob,
+  })));
+  vi.stubGlobal('fetch', fetcher);
+  render(<MarketplaceInstallDialog {...props} discoverTasks />);
+  await waitFor(() => expect(pendingInstall()?.dismissed).toBe(true));
+  await waitFor(() => expect(fetcher.mock.calls.some(call => String(call[0]).endsWith('/installs'))).toBe(true));
+  expect(getInstallTasks()).toHaveLength(0);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(fetcher.mock.calls.some(call => String(call[0]).endsWith('/api/plugins/list'))).toBe(false);
 });

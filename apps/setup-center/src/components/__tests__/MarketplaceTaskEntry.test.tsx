@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import i18n from '../../i18n';
-import { dockPosition, MarketplaceTaskEntry } from '../MarketplaceTaskEntry';
-import { getInstallTasks, patchInstall, taskPhase, trackInstall } from '../../marketplace/installTasks';
+import { dockPosition, MarketplaceTaskEntry, MarketplaceTaskList } from '../MarketplaceTaskEntry';
+import { currentInstallTasks, getInstallTasks, patchInstall, taskPhase, trackInstall } from '../../marketplace/installTasks';
+import { InboxBadge } from '../InboxBadge';
 
 beforeEach(async () => { localStorage.clear(); await i18n.changeLanguage('en'); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
@@ -35,4 +36,36 @@ it('completion retires the capsule, while pending permissions persist', () => {
   act(() => vi.advanceTimersByTime(5000));
   expect(screen.queryByRole('button', { name: /View installations/ })).toBeNull();
   expect(getInstallTasks()).toHaveLength(1);
+});
+
+it('migrates only live v1 tasks without importing historical permissions or completed jobs', () => {
+  const task = { key: 'old', base: 'https://home.example', job, background: true, hidden: false, changedAt: Date.now() };
+  localStorage.setItem('openakita.marketplace.tasks.v1', JSON.stringify([
+    task,
+    { ...task, key: 'yesterday', job: { ...job, id: 'yesterday', status: 'installed' }, setup: 'permissions' },
+    { ...task, key: 'done', job: { ...job, id: 'done', status: 'installed' }, setup: 'ready' },
+  ]));
+  expect(getInstallTasks().map(task => task.key)).toEqual(['old']);
+  expect(JSON.parse(localStorage.getItem('openakita.marketplace.tasks.v1')!)).toHaveLength(3);
+});
+
+it('puts the running installation first and excludes completed and other-server tasks', () => {
+  const pending = trackInstall('https://home.example', { ...job, id: 'pending', resource_name: 'Waiting', status: 'installed' });
+  patchInstall(pending.key, { setup: 'permissions' });
+  trackInstall('https://home.example', { ...job, resource_name: 'Current installation' });
+  trackInstall('https://home.example', { ...job, id: 'done', resource_type: 'skill', status: 'installed' });
+  trackInstall('https://office.example', { ...job, id: 'other' });
+  const current = currentInstallTasks(getInstallTasks(), 'https://home.example');
+  render(<MarketplaceTaskList tasks={current} />);
+  const rows = screen.getAllByRole('button');
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toHaveTextContent('Current installation');
+  expect(rows[1]).toHaveTextContent('Waiting');
+});
+
+it('does not change the notification badge for local installation permissions', () => {
+  const task = trackInstall('https://home.example', { ...job, status: 'installed' });
+  patchInstall(task.key, { setup: 'permissions' });
+  render(<InboxBadge apiBaseUrl="https://home.example" serviceRunning countOverride={3} />);
+  expect(screen.getByLabelText('3 unread inbox messages')).toHaveTextContent('3');
 });

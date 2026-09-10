@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { MarketplaceInstallProgress } from "./MarketplaceInstallProgress";
 import { MarketplaceTaskEntry, MarketplaceTaskList } from './MarketplaceTaskEntry';
 import { useInstallTaskMonitor } from '../marketplace/useInstallTaskMonitor';
-import { getInstallTasks, INSTALL_TASK_OPEN, INSTALL_TASK_REFRESH, openInstallTask, patchInstall, taskKey, taskPhase, trackInstall, useInstallTasks, type InstallTask, type InstallJob, type PluginSetupState } from '../marketplace/installTasks';
+import { currentInstallTasks, getInstallTasks, isInstalling, INSTALL_TASK_OPEN, INSTALL_TASK_REFRESH, openInstallTask, patchInstall, taskKey, taskPhase, trackInstall, useInstallTasks, type InstallTask, type InstallJob, type PluginSetupState } from '../marketplace/installTasks';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -110,7 +110,7 @@ export function MarketplaceInstallDialog({
     return requestJson<T>(apiBaseUrl + path, init);
   }, [apiBaseUrl, selectedBase]);
 
-  const restoreMobile = useCallback(async (pending: PendingInstall, reveal = true) => {
+  const restoreMobile = useCallback(async (pending: PendingInstall, reveal = true, recoverOnly = false) => {
     if (pending.dismissed || loadingMobile.current) return;
     loadingMobile.current = true;
     mobile.current = pending;
@@ -122,9 +122,20 @@ export function MarketplaceInstallDialog({
         : await request<InstallJob>('/api/marketplace/installs/prepare', {
           method: 'POST', body: JSON.stringify({ token: pending.token, endpoint: pending.endpoint }),
         });
+      const known = getInstallTasks().find(task => task.key === taskKey(pending.target.base, prepared.id));
+      if (recoverOnly && pending.jobId && !known && !isInstalling(prepared)) {
+        // The old single-pending pointer can refer to an installation from days
+        // ago. Do not bypass working-set migration through this recovery path.
+        if (pendingInstall()?.key === pending.key) saveInstall({ ...pending, dismissed: true });
+        setOpen(false);
+        return;
+      }
       const saved = { ...pending, jobId: prepared.id, token: undefined };
       saveInstall(saved); mobile.current = saved;
-      if (mounted.current) saveJob(prepared, pending.target.base, saved);
+      if (mounted.current) {
+        saveJob(prepared, pending.target.base, saved);
+        if (recoverOnly && pending.jobId && !known) patchInstall(taskKey(pending.target.base, prepared.id), { background: true });
+      }
     } catch (error) {
       if (mounted.current) setErrorCode(error instanceof Error ? error.message : 'marketplace_connection_failed');
       if (error instanceof Error && error.message === 'marketplace_account_mismatch') {
@@ -150,7 +161,7 @@ export function MarketplaceInstallDialog({
     const initial = pendingInstall();
     if (initial && !initial.dismissed) {
       const tracked = initial.jobId && getInstallTasks().find(task => task.key === taskKey(initial.target.base, initial.jobId!));
-      void restoreMobile(initial, !tracked || (!tracked.background && !tracked.hidden && !['complete', 'cancelled'].includes(taskPhase(tracked))));
+      void restoreMobile(initial, (!initial.jobId && !tracked) || (!!tracked && !tracked.background && !tracked.hidden && !['complete', 'cancelled'].includes(taskPhase(tracked))), true);
     }
     window.addEventListener('openakita-marketplace-resume', resume);
     return () => { mounted.current = false; window.removeEventListener('openakita-marketplace-resume', resume); };
@@ -371,7 +382,12 @@ export function MarketplaceInstallDialog({
   if (job?.already_installed) completionKey = job.installed_pending_restart ? "alreadyInstalledPending" : "alreadyInstalled";
 
   return (<>
-    <MarketplaceTaskEntry tasks={currentTasks} onOpen={() => setPanelOpen(true)} />
+    <MarketplaceTaskEntry tasks={currentTasks} onOpen={() => {
+      const unfinished = currentInstallTasks(tasks, apiBaseUrl);
+      const completed = [...currentTasks].filter(task => taskPhase(task) === 'complete').sort((a, b) => b.changedAt - a.changedAt)[0];
+      if (!unfinished.length && completed) selectTask(completed);
+      else setPanelOpen(true);
+    }} />
     <Dialog open={panelOpen} onOpenChange={setPanelOpen} modal={compactViewport}>
       <DialogContent overlayClassName="z-[1100]" className="install-task-panel z-[1100]" onCloseAutoFocus={event => event.preventDefault()}>
         <button className="install-task-handle" aria-label={t('marketplaceInstall.tasks.collapse')}
@@ -380,7 +396,7 @@ export function MarketplaceInstallDialog({
           onPointerUp={event => { if (event.clientY - Number(event.currentTarget.dataset.startY) > 40) setPanelOpen(false); }} />
         <DialogHeader><DialogTitle>{t('marketplaceInstall.tasks.title')}</DialogTitle>
           <DialogDescription>{t('marketplaceInstall.tasks.description')}</DialogDescription></DialogHeader>
-        <MarketplaceTaskList tasks={tasks} onSelect={selectTask} />
+        <MarketplaceTaskList tasks={currentInstallTasks(tasks, apiBaseUrl)} onSelect={selectTask} />
       </DialogContent>
     </Dialog>
     <Dialog open={open} onOpenChange={(next) => { if (!next) void close(); }}>

@@ -13,7 +13,6 @@ export function useInstallTaskMonitor(apiBaseUrl: string, discover: boolean) {
     let running = false;
     let timer: ReturnType<typeof setTimeout>;
     let cycle = 0;
-    const discovered = new Set<string>();
     const base = apiBaseUrl.replace(/\/+$/, '');
     const server = IS_CAPACITOR ? getActiveServer() : null;
     const target: Target | undefined = server ? { id: server.id, name: server.name,
@@ -31,7 +30,7 @@ export function useInstallTaskMonitor(apiBaseUrl: string, discover: boolean) {
       if (document.visibilityState === 'hidden') return;
       running = true;
       try {
-        // Discovery also restores jobs created by another client of this backend.
+        // Follow live installs, never reclassify installation history as new work.
         if (discover && cycle++ % 5 === 0) {
           try {
             const res = await request('/api/marketplace/installs');
@@ -40,8 +39,7 @@ export function useInstallTaskMonitor(apiBaseUrl: string, discover: boolean) {
               if (!disposed && Array.isArray(body.data)) for (const job of body.data as InstallJob[]) {
                 if (job.status === 'ready') continue; // Confirmation stays with its initiating client.
                 const known = getInstallTasks().find(t => t.base === base && t.job.id === job.id);
-                if (!known && discovered.has(job.id)) continue;
-                discovered.add(job.id);
+                if (!known && !isInstalling(job)) continue;
                 const mobile = known?.mobile || (target ? { target, endpoint: '', jobId: job.id, key: `${base}#${job.id}` } : undefined);
                 trackInstall(base, job, mobile, isInstalling(job));
               }

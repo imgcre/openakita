@@ -12,7 +12,6 @@ import { INBOX_REFRESH_EVENT, INBOX_UNREAD_CHANGED_EVENT } from "../components/I
 import { useMdModules } from "./chat/hooks/useMdModules";
 import type { InboxListResponse, InboxMessage } from "../inboxTypes";
 import { isHighPriorityInbox } from "../inboxTypes";
-import { MarketplaceTaskInbox } from '../components/MarketplaceTaskEntry';
 
 type InboxFilter = "all" | "unread" | "updates" | "important";
 
@@ -199,19 +198,18 @@ export function InboxView({
 
   if (!serviceRunning) {
     return (
-      <div><MarketplaceTaskInbox /><div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <div className="max-w-sm text-center">
           <Inbox size={36} className="mx-auto mb-3 text-muted-foreground/35" />
           <h2 className="text-base font-semibold">{t("inbox.serviceNotRunning")}</h2>
           <p className="mt-2 text-sm text-muted-foreground">{t("inbox.serviceNotRunningHint")}</p>
         </div>
-      </div></div>
+      </div>
     );
   }
 
   return (
     <div className="inboxView">
-      <MarketplaceTaskInbox />
       <div className="inboxHeader">
         <div className="min-w-0">
           <h1 className="inboxTitle">{t("inbox.title")}</h1>

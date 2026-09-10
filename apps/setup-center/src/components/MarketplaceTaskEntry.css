@@ -27,9 +27,6 @@
 .install-task-capsule[data-phase="complete"] .install-task-grip > svg { color: #15966b; }
 .install-task-spin { animation: install-task-spin 1s linear infinite; flex-shrink: 0; }
 @keyframes install-task-spin { to { transform: rotate(360deg); } }
-.install-task-inbox { flex-shrink: 0; margin-bottom: 16px; border-bottom: 1px solid var(--line); }
-.install-task-inbox h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
-.install-task-inbox .install-task-list { max-height: 240px; overflow-y: auto; }
 .install-task-row + .install-task-row { border-top: 1px solid var(--line); }
 .install-task-summary { display: flex; width: 100%; align-items: center; gap: 12px; padding: 14px 4px; background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; }
 .install-task-summary:hover { background: rgb(127 127 127 / 5%); }

@@ -39,7 +39,8 @@ export type InstallTask = {
 };
 export const INSTALL_TASK_OPEN = 'openakita:install-task-open';
 export const INSTALL_TASK_REFRESH = 'openakita:install-task-refresh';
-const STORAGE = 'openakita.marketplace.tasks.v1';
+const STORAGE = 'openakita.marketplace.tasks.v2';
+const LEGACY_STORAGE = 'openakita.marketplace.tasks.v1';
 const listeners = new Set<() => void>();
 let snapshot: InstallTask[] = [];
 let stored: string | null | undefined;
@@ -64,10 +65,24 @@ export function taskPhase(task: InstallTask): 'installing' | 'checking' | 'permi
 export function needsInstallAttention(task: InstallTask) {
   return ['permissions', 'setup', 'failed', 'paused'].includes(taskPhase(task));
 }
+/** This is a working set, not installation history. Completed resources belong
+ * in their management views, including any permissions deferred before migration. */
+export function currentInstallTasks(tasks: InstallTask[], base: string) {
+  return tasks.filter(task => task.base === baseUrl(base) && !['complete', 'cancelled'].includes(taskPhase(task)));
+}
 export function getInstallTasks(): InstallTask[] {
   if (memoryOnly) return snapshot;
   try {
-    const value = localStorage.getItem(STORAGE);
+    let value = localStorage.getItem(STORAGE);
+    if (value === null) {
+      // v1 imported arbitrary historical jobs and cannot distinguish those from
+      // genuinely followed installs. Preserve live work; never alter plugins.
+      const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE) || '[]');
+      if (Array.isArray(legacy) && legacy.length) {
+        value = JSON.stringify(legacy.filter(task => task?.job && isInstalling(task.job)));
+        localStorage.setItem(STORAGE, value);
+      }
+    }
     if (stored !== value) {
       stored = value;
       const parsed = JSON.parse(value || '[]');
