@@ -21,6 +21,7 @@ import {
 } from "../marketplace/navigation";
 
 import { acceptMobileInstall, installRequest, pendingInstall, saveInstall, openMarketplace, marketplaceOpenErrorKey, targetFetch, targetIsCurrent, type PendingInstall } from '../marketplace/mobile';
+import { captureWebInstallReturn, dismissWebInstall, pendingWebInstall, saveWebInstallJob } from '../marketplace/web';
 
 type ParsedLink = { token: string; endpoint: string };
 
@@ -107,6 +108,46 @@ export function MarketplaceInstallDialog({
     }
     return requestJson<T>(apiBaseUrl + path, init);
   }, [apiBaseUrl, selectedBase]);
+
+  const webRequest = useRef<{ key: string; promise: Promise<InstallJob> } | null>(null);
+  const restoreWeb = useCallback(async () => {
+    if (IS_TAURI || IS_CAPACITOR) return;
+    try {
+      captureWebInstallReturn();
+      const pending = pendingWebInstall(apiBaseUrl);
+      if (!pending) return;
+      const known = getInstallTasks().find(task => task.key === taskKey(apiBaseUrl, pending.jobId || ''));
+      if (known && (known.background || known.hidden || ['complete', 'cancelled'].includes(taskPhase(known)))) return;
+      setOpen(true); setLoading(true); setErrorCode('');
+      const key = `${pending.state}:${pending.jobId || pending.token}`;
+      if (webRequest.current?.key !== key) {
+        const promise = pending.jobId
+          ? requestJson<InstallJob>(`${apiBaseUrl}/api/marketplace/installs/${encodeURIComponent(pending.jobId)}`)
+          : requestJson<InstallJob>(`${apiBaseUrl}/api/marketplace/installs/prepare`, {
+            method: 'POST', body: JSON.stringify({ token: pending.token, endpoint: pending.endpoint }),
+          });
+        webRequest.current = { key, promise };
+      }
+      const prepared = await webRequest.current.promise;
+      saveWebInstallJob(pending, prepared.id);
+      if (mounted.current) saveJob(prepared, apiBaseUrl, undefined);
+    } catch (error) {
+      webRequest.current = null;
+      if (mounted.current) {
+        setOpen(true);
+        setErrorCode(error instanceof Error ? error.message : 'marketplace_connection_failed');
+      }
+    } finally { if (mounted.current) setLoading(false); }
+  }, [apiBaseUrl, saveJob]);
+
+  useEffect(() => {
+    if (IS_TAURI || IS_CAPACITOR) return;
+    void restoreWeb();
+    const resume = () => { if (location.hash.startsWith('#openakita-install=')) void restoreWeb(); };
+    window.addEventListener('hashchange', resume);
+    window.addEventListener('pageshow', resume);
+    return () => { window.removeEventListener('hashchange', resume); window.removeEventListener('pageshow', resume); };
+  }, [restoreWeb]);
 
   const restoreMobile = useCallback(async (pending: PendingInstall, reveal = true, recoverOnly = false) => {
     if (pending.dismissed || loadingMobile.current) return;
@@ -336,6 +377,7 @@ export function MarketplaceInstallDialog({
 
   const close = useCallback(async () => {
     if (loading || acting || pluginBusy) return;
+    if (!IS_TAURI && !IS_CAPACITOR) dismissWebInstall();
     const current = job;
     setOpen(false);
     if (current && current.status !== 'ready') {
@@ -416,6 +458,10 @@ export function MarketplaceInstallDialog({
           <strong>{mobile.current.target.name}</strong><div>{mobile.current.target.base}</div>
           {accountLabel && <div>{accountLabel}</div>}
         </div>}
+        {!IS_TAURI && !IS_CAPACITOR && <div className="rounded-md border p-3 text-sm break-all">
+          <div className="text-muted-foreground">{t('marketplaceInstall.target')}</div>
+          <strong>{apiBaseUrl || location.origin}</strong>
+        </div>}
         {loading && <div role="status" className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground"><Loader2 size={24} className="size-6 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />{t("marketplaceInstall.connecting")}</div>}
 
         {errorCode && <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"><AlertCircle className="mt-0.5 shrink-0" size={18} /><span>{friendlyError(errorCode)}</span></div>}
@@ -474,7 +520,10 @@ export function MarketplaceInstallDialog({
           }}>{t('marketplaceInstall.backToMarket')}</Button>}
           {canInstall && <Button onClick={confirm} disabled={acting || loading || errorCode === "marketplace_target_changed"}><Download size={16} />{t(job.install_action === 'upgrade' ? 'marketplaceInstall.upgrade' : job.install_action === 'replace' ? 'marketplaceInstall.replace' : 'marketplaceInstall.install')}</Button>}
           {IS_CAPACITOR && errorCode && !loading && <Button variant="outline" onClick={() => { if (mobile.current) void restoreMobile(mobile.current); }}>{t('common.retry')}</Button>}
-          {!IS_CAPACITOR && errorCode && !loading && <Button variant="outline" onClick={() => window.dispatchEvent(new Event(INSTALL_TASK_REFRESH))}>{t('common.retry')}</Button>}
+          {!IS_CAPACITOR && errorCode && !loading && <Button variant="outline" onClick={() => {
+            if (!IS_TAURI && !job) void restoreWeb();
+            else window.dispatchEvent(new Event(INSTALL_TASK_REFRESH));
+          }}>{t('common.retry')}</Button>}
           {IS_CAPACITOR && ['marketplace_target_changed', 'marketplace_server_login_required'].includes(errorCode) && <Button onClick={onManageServers}>{t('marketplaceInstall.manageServers')}</Button>}
           {IS_CAPACITOR && ['marketplace_account_required', 'marketplace_account_mismatch', 'marketplace_instruction_unavailable', 'marketplace_install_not_found'].includes(errorCode) && <Button variant="outline" onClick={async () => {
             await close();

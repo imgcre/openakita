@@ -26,6 +26,10 @@ import { StaleBundleBanner } from "./components/StaleBundleBanner";
 import { initTheme } from "./theme";
 import { logger } from "./platform/logger";
 import { copyToClipboard, readFromClipboard } from "./utils/clipboard";
+import { captureWebInstallReturn } from './marketplace/web';
+import { IS_WEB } from './platform/detect';
+
+if (IS_WEB) captureWebInstallReturn();
 
 // Initialize theme before rendering to catch OS changes
 initTheme();
@@ -442,5 +446,4 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 // In case App mounts but doesn't emit.
 requestAnimationFrame(() => hideBoot(true));
-
 

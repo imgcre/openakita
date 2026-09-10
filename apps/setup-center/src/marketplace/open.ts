@@ -4,6 +4,7 @@ import { safeFetchResponse } from "../providers";
 import { isTauriRemoteMode } from "../platform/auth";
 import { dispatchAccountStatusChanged, type AccountStatusSummary } from "../utils/accountStatusEvents";
 import { buildMarketplaceContextUrl, buildMarketplaceHandoffUrl, marketplaceOrigin } from "./navigation";
+import { buildWebMarketplaceUrl } from './web';
 
 export function marketplaceOpenErrorKey(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error);
@@ -28,6 +29,10 @@ export async function openMarketplaceWithAccount(
   version: string, apiBaseUrl?: string, next = "/", configuredOrigin?: string,
 ): Promise<void> {
   if (IS_CAPACITOR) return openMarketplace(version, next);
+  if (!IS_TAURI) {
+    window.location.assign(buildWebMarketplaceUrl(version, apiBaseUrl || location.origin, next, configuredOrigin));
+    return;
+  }
   const origin = marketplaceOrigin(configuredOrigin);
   let target = buildMarketplaceContextUrl(version, next, origin);
   if (IS_TAURI && !isTauriRemoteMode() && apiBaseUrl) {

@@ -53,7 +53,37 @@ browser to open the app. No clipboard or manually pasted callback is required.
 The app needs an existing valid Marketplace context; an unrelated external link
 cannot silently choose a server.
 
-## Task recovery
+## Remote Web installation
+
+The Web interface opens Marketplace in the same browser tab with `client=web`.
+Its per-tab context lasts 30 minutes and contains a random state, the original
+Web page and the target API base. Marketplace receives only the clean Web return
+address (origin and path), state and version. The original query/hash and instance
+credentials stay in OpenAkita's origin. State generation uses `getRandomValues`,
+which is available on LAN HTTP pages as well as HTTPS pages.
+
+After acquisition, both resource details and the resource library return to that
+Web address with a one-use instruction in the URL fragment. OpenAkita captures
+and clears the fragment before routing or login. It validates the state, expiry,
+page, Marketplace origin and current API target, then uses the existing
+authenticated prepare/confirm APIs. Preparation never confirms installation.
+After preparation, reload recovery uses the job ID; failed preparation keeps the
+ticket for retry. Progress, background tasks and plugin authorization share the
+desktop/App components. The Marketplace page never fetches a private backend or
+receives its login credentials.
+
+This Web path requires the existing remote instance login and matching instance
+and Marketplace account identities. It does not grant browser cookies or local-IP
+exemptions access to native desktop credentials. Expired, unrelated or replayed
+returns require reopening Marketplace from OpenAkita. Entering Marketplace from
+a desktop client clears a previous Web/App context in that browser tab.
+
+Deploy the Marketplace web changes together with the rebuilt OpenAkita Web
+assets. No additional Account protocol, backend change or APK is required for
+this Web flow. Verify an HTTP LAN address and HTTPS reverse proxy, refresh before
+confirmation, background completion/permission recovery and an expired link.
+
+## App task recovery
 
 The app persists the target and returned job ID. A response lost during preparation
 can be retried with the same instruction. After preparation, subsequent operations

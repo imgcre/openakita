@@ -4267,7 +4267,7 @@
       "marketplace_identity_unavailable": "暂时无法验证账号，请稍后重试。",
       "marketplace_account_mismatch": "市场领取资源的账号与目标服务的账号不一致，请在市场切换到相同账号后重新发起安装。",
       "marketplace_account_required": "目标服务尚未登录有效的 OpenAkita 账号，请先登录后重试。",
-      "marketplace_context_expired": "此次市场连接已过期，请从 App 重新打开市场。",
+      "marketplace_context_expired": "此次市场连接已过期，请从 OpenAkita 重新打开市场。",
       "marketplace_target_changed": "当前连接已改变。请连接上方目标服务后重试，本次安装不会转移到其他服务。",
       "marketplace_instruction_invalid": "安装链接无效。",
       "marketplace_instruction_unavailable": "安装链接已失效，请返回 Marketplace 重新发起安装。",
