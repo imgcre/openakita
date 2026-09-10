@@ -5179,7 +5179,7 @@ function MainApp() {
             setWebAuthed(false);
           } : undefined}
           webAccessUrl={IS_TAURI && (serviceStatus?.running ?? false) ? `${apiBaseUrl || "http://127.0.0.1:18900"}/web` : undefined}
-          apiBaseUrl={apiBaseUrl || "http://127.0.0.1:18900"}
+          apiBaseUrl={httpApiBase()}
           onToggleMobileSidebar={isMobile ? () => setMobileSidebarOpen((v) => !v) : undefined}
           serverName={IS_CAPACITOR ? (getActiveServer()?.name || undefined) : undefined}
           onServerManager={IS_CAPACITOR ? () => setShowServerManager(true) : undefined}
