@@ -2,7 +2,7 @@ import { MarketplacePluginSetup } from "./MarketplacePluginSetup";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { AlertCircle, CheckCircle2, Download, PackageCheck, ShieldCheck } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, Loader2, PackageCheck, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { MarketplaceInstallProgress, type InstallationProgress } from "./MarketplaceInstallProgress";
 import {
@@ -342,7 +342,7 @@ export function MarketplaceInstallDialog({
           <strong>{mobile.current.target.name}</strong><div>{mobile.current.target.base}</div>
           {accountLabel && <div>{accountLabel}</div>}
         </div>}
-        {loading && <div className="py-8 text-center text-sm text-muted-foreground"><span className="spinner mx-auto mb-3 block" />{t("marketplaceInstall.connecting")}</div>}
+        {loading && <div role="status" className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground"><Loader2 size={24} className="size-6 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" />{t("marketplaceInstall.connecting")}</div>}
 
         {errorCode && <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"><AlertCircle className="mt-0.5 shrink-0" size={18} /><span>{friendlyError(errorCode)}</span></div>}
 
