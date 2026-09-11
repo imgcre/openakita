@@ -74,7 +74,9 @@ class SessionLogBuffer:
         self._max_entries = max_entries_per_session
         self._max_sessions = max_sessions
         self._buffers: dict[str, deque[LogEntry]] = {}
-        self._buffer_lock = threading.Lock()
+        # Allocations while holding this lock can run GC finalizers, including
+        # asyncio's pending-task warning, which writes back through our handler.
+        self._buffer_lock = threading.RLock()
         self._current_session_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
             "openakita_log_session_id",
             default=None,
@@ -160,22 +162,18 @@ class SessionLogBuffer:
         sid = session_id or self.get_current_session() or "_global"
         count = min(count, self._max_entries)
 
-        logs = []
-
         with self._buffer_lock:
-            # 获取 session 日志
-            if sid in self._buffers:
-                for entry in self._buffers[sid]:
-                    if level_filter and entry.level != level_filter:
-                        continue
-                    logs.append((entry.timestamp, entry))
-
-            # 如果需要，包含全局日志
+            # Snapshot before allocating per-entry tuples: a finalizer may log
+            # reentrantly, and must not mutate a deque we are iterating over.
+            entries = list(self._buffers.get(sid, ()))
             if include_global and sid != "_global" and "_global" in self._buffers:
-                for entry in self._buffers["_global"]:
-                    if level_filter and entry.level != level_filter:
-                        continue
-                    logs.append((entry.timestamp, entry))
+                entries.extend(list(self._buffers["_global"]))
+
+        logs = [
+            (entry.timestamp, entry)
+            for entry in entries
+            if not level_filter or entry.level == level_filter
+        ]
 
         # 按时间排序并取最后 count 条
         logs.sort(key=lambda x: x[0])

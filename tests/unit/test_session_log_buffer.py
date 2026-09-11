@@ -1,8 +1,55 @@
 import asyncio
+import subprocess
+import sys
+import textwrap
 
 import pytest
 
 from openakita.logging.session_buffer import SessionLogBuffer
+
+
+def test_finalizer_can_log_while_buffer_is_read():
+    # Isolate GC and the logging singleton. A regression must time out this
+    # subprocess rather than deadlocking the entire pytest worker.
+    script = textwrap.dedent("""\
+        import gc
+        import logging
+        from collections import deque
+        from openakita.logging.handlers import SessionLogHandler
+        from openakita.logging.session_buffer import SessionLogBuffer
+
+        gc.disable()
+        buffer = SessionLogBuffer()
+        buffer.add_log("INFO", "test", "existing", session_id="test")
+        logger = logging.getLogger("finalizer-regression")
+        logger.propagate = False
+        logger.addHandler(SessionLogHandler())
+
+        class Finalizer:
+            def __del__(self):
+                logger.error("collected task", extra={"session_id": "test"})
+
+        class CollectOnRead(deque):
+            def __iter__(self):
+                # Force the GC timing seen when pending asyncio tasks become
+                # unreachable between tests, instead of relying on thresholds.
+                gc.collect()
+                return super().__iter__()
+
+        buffer._buffers["test"] = CollectOnRead(buffer._buffers["test"])
+        pending = Finalizer()
+        pending.cycle = pending
+        del pending
+        logs = buffer.get_logs("test", include_global=False)
+        assert [entry["message"] for entry in logs] == ["existing", "collected task"]
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.asyncio
