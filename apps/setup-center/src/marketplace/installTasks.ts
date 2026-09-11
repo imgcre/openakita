@@ -122,13 +122,14 @@ function subscribe(listener: () => void) {
 export function trackInstall(base: string, job: InstallJob, mobile?: PendingInstall, background = false) {
   const all = getInstallTasks();
   const key = taskKey(base, job.id);
-  if (removed.has(key)) return;
   const previous = all.find(t => t.key === key);
   const task: InstallTask = previous ? { ...previous, job, error: undefined, mobile: mobile || previous.mobile }
     : { key, base: baseUrl(base), job, mobile, background, hidden: false, changedAt: Date.now() };
   if (previous?.job.status !== job.status) task.changedAt = Date.now();
   // The instruction token is one-use and is never needed to resume a known job.
   if (task.mobile) task.mobile = { ...task.mobile, token: undefined, jobId: job.id };
+  // Preserve the return contract without publishing a dismissed poll result.
+  if (removed.has(key)) return task;
   publish([...all.filter(t => t.key !== key), task]);
   return task;
 }
