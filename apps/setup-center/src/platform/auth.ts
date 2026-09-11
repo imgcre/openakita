@@ -19,7 +19,6 @@ export function setTauriRemoteMode(enabled: boolean): void {
 export function isTauriRemoteMode(): boolean { return _tauriRemoteMode; }
 
 function needsAuth(): boolean {
-  if (IS_LOCAL_WEB) return false;
   return !IS_TAURI || _tauriRemoteMode;
 }
 
@@ -83,7 +82,7 @@ let _refreshPromise: Promise<string | null> | null = null;
 export const AUTH_EXPIRED_EVENT = "openakita-auth-expired";
 
 export async function refreshAccessToken(apiBase = ""): Promise<string | null> {
-  if (_localAuthMode) return null;
+  if (_localAuthMode && !getAccessToken()) return null;
   // Cross-origin (Capacitor / Tauri remote): httpOnly cookie refresh is unreliable
   if (isCrossOriginMode()) return null;
   if (_refreshPromise) return _refreshPromise;
@@ -129,7 +128,7 @@ export async function authFetch(
   if (!needsAuth()) return fetch(url, init);
 
   // Local auth mode: backend grants access by IP, no token needed
-  if (_localAuthMode) return fetch(url, init);
+  if (_localAuthMode && !getAccessToken()) return fetch(url, init);
 
   let token = getAccessToken();
 
@@ -285,10 +284,12 @@ export function installFetchInterceptor(): void {
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async function (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-    if (_localAuthMode) return originalFetch(input, init);
+    if (_localAuthMode && !getAccessToken()) return originalFetch(input, init);
 
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url;
-    const isApi = url.startsWith("/") || url.startsWith(window.location.origin) || url.includes("/api/");
+    const target = new URL(url, window.location.href);
+    const isApi = isCrossOriginMode() ? url.includes('/api/')
+      : target.origin === window.location.origin && target.pathname.startsWith('/api/');
 
     if (isApi) {
       const token = getAccessToken();
@@ -368,4 +369,3 @@ export async function checkAuth(apiBase = ""): Promise<boolean> {
   }
   return false;
 }
-

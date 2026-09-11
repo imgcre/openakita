@@ -18,11 +18,11 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { LogOut, Square, ClipboardCopy, Compass, Store } from "lucide-react";
 import { toast } from "sonner";
-import { openExternalUrl } from "../platform";
 import { marketplaceOpenErrorKey, openMarketplaceWithAccount } from "../marketplace/open";
 import { copyToClipboard } from "../utils/clipboard";
 import { RemoteAccessDialog } from "./RemoteAccessDialog";
 import { InboxBadge } from "./InboxBadge";
+import { openDesktopWebSession } from '../utils/desktopWebSession';
 
 export type TopbarProps = {
   wsDropdownOpen: boolean;
@@ -254,7 +254,7 @@ export function Topbar({
         {webAccessUrl && serviceRunning && !isWeb && (
           <span
             className="topbarWebAccess"
-            onClick={() => openExternalUrl(webAccessUrl)}
+            onClick={() => void openDesktopWebSession(webAccessUrl).catch(() => toast.error(t('topbar.webSessionFailed')))}
             title={webAccessUrl}
             style={{
               cursor: "pointer", fontSize: 11, display: "inline-flex", alignItems: "center", gap: 3,

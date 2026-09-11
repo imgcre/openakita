@@ -62,4 +62,9 @@ def require_marketplace_access(request: Request) -> None:
     if config is not None and supplied.startswith("Bearer "):
         if config.validate_access_token(supplied[7:]):
             return
-    require_desktop_account(request)
+    try:
+        require_desktop_account(request)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=403, detail={"code": "marketplace_instance_auth_required"}
+        ) from exc

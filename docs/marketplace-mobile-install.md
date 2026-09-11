@@ -55,6 +55,16 @@ cannot silently choose a server.
 
 ## Remote Web installation
 
+The desktop's Web Access action issues a one-use, 60-second browser handoff
+authorized by the native desktop credential. The browser consumes the fragment
+ticket before mounting the application and receives a normal instance access
+token and refresh cookie. Loopback Web requests retain and send explicit tokens
+even though basic page access is exempt from password authentication. The native
+credential and account refresh token never enter the browser. Account display
+state alone, a cookie alone or a loopback IP still cannot authorize installation.
+Missing instance authorization has its own error instead of suggesting that the
+OpenAkita account is signed out.
+
 The Web interface opens Marketplace with `client=web`. Mobile browsers navigate
 in the same tab. Desktop browsers open a new tab, keeping the original OpenAkita
 page available. Desktop market tabs retain their opener and advertise
