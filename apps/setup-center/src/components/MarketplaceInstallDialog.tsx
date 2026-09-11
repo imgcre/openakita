@@ -21,7 +21,8 @@ import {
 } from "../marketplace/navigation";
 
 import { acceptMobileInstall, installRequest, pendingInstall, saveInstall, openMarketplace, marketplaceOpenErrorKey, targetFetch, targetIsCurrent, type PendingInstall } from '../marketplace/mobile';
-import { captureWebInstallReturn, dismissWebInstall, pendingWebInstall, saveWebInstallJob } from '../marketplace/web';
+import { captureWebInstallReturn, dismissWebInstall, enqueueWebInstall, pendingWebInstall, saveWebInstallJob } from '../marketplace/web';
+import { webInstallRelay, WEB_INSTALL_ARRIVED } from '../marketplace/webRelay';
 
 type ParsedLink = { token: string; endpoint: string };
 
@@ -143,10 +144,13 @@ export function MarketplaceInstallDialog({
   useEffect(() => {
     if (IS_TAURI || IS_CAPACITOR) return;
     void restoreWeb();
+    const stopRelay = webInstallRelay()?.listen(() => apiBaseUrl.replace(/\/+$/, ''), enqueueWebInstall);
+    const arrived = () => { void restoreWeb(); };
     const resume = () => { if (location.hash.startsWith('#openakita-install=')) void restoreWeb(); };
     window.addEventListener('hashchange', resume);
     window.addEventListener('pageshow', resume);
-    return () => { window.removeEventListener('hashchange', resume); window.removeEventListener('pageshow', resume); };
+    window.addEventListener(WEB_INSTALL_ARRIVED, arrived);
+    return () => { stopRelay?.(); window.removeEventListener(WEB_INSTALL_ARRIVED, arrived); window.removeEventListener('hashchange', resume); window.removeEventListener('pageshow', resume); };
   }, [restoreWeb]);
 
   const restoreMobile = useCallback(async (pending: PendingInstall, reveal = true, recoverOnly = false) => {
@@ -377,7 +381,7 @@ export function MarketplaceInstallDialog({
 
   const close = useCallback(async () => {
     if (loading || acting || pluginBusy) return;
-    if (!IS_TAURI && !IS_CAPACITOR) dismissWebInstall();
+    const nextWebInstall = () => { if (!IS_TAURI && !IS_CAPACITOR) dismissWebInstall(); };
     const current = job;
     setOpen(false);
     if (current && current.status !== 'ready') {
@@ -386,15 +390,17 @@ export function MarketplaceInstallDialog({
       patchInstall(taskKey(selectedBase, current.id), done ? { background: false, hidden: true } : { background: true });
       if (done && mobile.current && pendingInstall()?.key === mobile.current.key) saveInstall({ ...mobile.current, dismissed: true });
       if (active) toast(t('marketplaceInstall.tasks.backgroundHint'));
+      nextWebInstall();
       return;
     }
     if (mobile.current && pendingInstall()?.key === mobile.current.key) saveInstall({ ...mobile.current, dismissed: true });
-    if (current?.status !== "ready") return;
+    if (current?.status !== "ready") { nextWebInstall(); return; }
     try {
       saveJob(await requestJob<InstallJob>(`/api/marketplace/installs/${encodeURIComponent(current.id)}/cancel`, { method: "POST" }));
     } catch {
       // The local service persists the pending cancellation and retries delivery.
     }
+    nextWebInstall();
   }, [active, requestJob, job, loading, acting, pluginBusy, selectedBase, saveJob, t]);
 
   const closeRef = useRef(() => {});

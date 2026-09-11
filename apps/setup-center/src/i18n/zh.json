@@ -4202,6 +4202,15 @@
     "wideImpactWarning": "执行隔离会重置 agent.db — token 用量历史与旧版统计将被清空。"
   },
   "marketplaceInstall": {
+    "webReturn": {
+      "sending": "正在返回 OpenAkita",
+      "sendingHint": "正在将安装请求交给打开市场的页面。若原页面已关闭，将在此页面继续。",
+      "sent": "安装请求已送达",
+      "sentHint": "请切回打开市场的 OpenAkita 标签页确认安装。你可以关闭此页面。",
+      "error": "暂时无法确认交接结果",
+      "errorHint": "安装请求仍然保留。请检查原来的 OpenAkita 页面，或重试确认交接结果。",
+      "close": "关闭此页面"
+    },
     "tasks": {
       "collapse": "收起安装面板",
       "title": "资源安装",

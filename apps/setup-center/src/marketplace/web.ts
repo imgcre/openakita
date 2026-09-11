@@ -1,11 +1,14 @@
 import { buildMarketplaceContextUrl } from './navigation';
+import { clearInheritedWebSources, webInstallRelay, WEB_INSTALL_ARRIVED } from './webRelay';
 
 const KEY = 'openakita.marketplace.web.v1';
 const ERROR_KEY = KEY + '.error';
 const TTL = 30 * 60_000;
+const QUEUE = KEY + '.queue';
 export type WebInstallContext = {
   state: string; base: string; endpoint: string; returnUrl: string; expires: number;
   token?: string; jobId?: string; consumed?: boolean;
+  relay?: boolean; delivered?: boolean;
 };
 function read(): WebInstallContext | null {
   try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { return null; }
@@ -45,6 +48,14 @@ export function openWebMarketplace(version: string, next: string, origin: string
     // noopener immediately would leave the returning tab without its context.
     // Each market tab owns a separate state, so concurrent returns stay isolated.
     const url = buildWebMarketplaceUrl(version, location.origin, next, origin, tab.sessionStorage);
+    const relay = webInstallRelay();
+    if (relay) {
+      const context: WebInstallContext = JSON.parse(tab.sessionStorage.getItem(KEY)!);
+      relay.register(context);
+      write({ ...context, relay: true }, tab.sessionStorage);
+    }
+    clearInheritedWebSources(tab.sessionStorage);
+    tab.sessionStorage.removeItem(QUEUE);
     tab.opener = null;
     tab.location.replace(url);
   } catch (error) {
@@ -84,6 +95,7 @@ export function pendingWebInstall(base: string): WebInstallContext | null {
   const error = sessionStorage.getItem(ERROR_KEY);
   if (error) { sessionStorage.removeItem(ERROR_KEY); throw new Error(error); }
   const context = read();
+  if (context?.delivered) return null;
   if (!context || (!context.token && !context.jobId)) return null;
   if (context.base !== baseUrl(base)) throw new Error('marketplace_target_changed');
   if (!context.jobId && context.expires <= Date.now()) throw new Error('marketplace_context_expired');
@@ -95,4 +107,40 @@ export function saveWebInstallJob(context: WebInstallContext, jobId: string) {
 export function dismissWebInstall() {
   const context = read();
   if (context) write({ ...context, token: undefined, jobId: undefined, consumed: true });
+  const queue = readQueue();
+  const next = queue.shift();
+  sessionStorage.setItem(QUEUE, JSON.stringify(queue));
+  if (next) {
+    write(next);
+    setTimeout(() => window.dispatchEvent(new Event(WEB_INSTALL_ARRIVED)), 0);
+  }
+}
+
+function readQueue(): WebInstallContext[] {
+  try { return JSON.parse(sessionStorage.getItem(QUEUE) || '[]'); } catch { return []; }
+}
+
+/** Persist before acknowledging so a source-page reload does not lose delivery. */
+export function enqueueWebInstall(context: WebInstallContext) {
+  const active = read();
+  const queue = readQueue();
+  if (active?.state === context.state || queue.some(item => item.state === context.state)) return;
+  const incoming = { ...context, relay: false, delivered: false };
+  if (active && !active.delivered && (active.token || active.jobId)) {
+    sessionStorage.setItem(QUEUE, JSON.stringify([...queue, incoming]));
+  } else write(incoming);
+  window.dispatchEvent(new Event(WEB_INSTALL_ARRIVED));
+  window.focus();
+}
+
+export function webReturnToRelay(): WebInstallContext | null {
+  if (sessionStorage.getItem(ERROR_KEY)) return null;
+  const context = read();
+  return context?.relay && (context.token || context.delivered) ? context : null;
+}
+
+export function finishWebRelay(sent: boolean) {
+  const context = read();
+  if (context) write({ ...context, relay: sent, delivered: sent,
+    ...(sent ? { token: undefined, consumed: true } : {}) });
 }

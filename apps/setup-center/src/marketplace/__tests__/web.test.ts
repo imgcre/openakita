@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { buildWebMarketplaceUrl, openWebMarketplace, captureWebInstallReturn, pendingWebInstall, saveWebInstallJob, dismissWebInstall } from '../web';
+import { buildWebMarketplaceUrl, openWebMarketplace, captureWebInstallReturn, pendingWebInstall, saveWebInstallJob, dismissWebInstall, enqueueWebInstall } from '../web';
 
 const endpoint = 'https://marketplace.openakita.cn';
 const token = 'a'.repeat(64);
@@ -80,4 +80,18 @@ it('gives desktop market tabs independent return contexts and detaches the opene
   // Opening new tabs must not overwrite a pending installation in the original.
   returnFromMarket(parent.searchParams.get('state')!);
   expect(pendingWebInstall(location.origin)?.token).toBe(token);
+});
+
+it('queues concurrent returns without overwriting the active confirmation and deduplicates deliveries', () => {
+  vi.spyOn(window, 'focus').mockImplementation(() => {});
+  const first = new URL(buildWebMarketplaceUrl('1.27.40', location.origin));
+  returnFromMarket(first.searchParams.get('state')!);
+  const active = pendingWebInstall(location.origin)!;
+  const next = { ...active, state: 'c'.repeat(64), token: 'd'.repeat(64) };
+  enqueueWebInstall(next); enqueueWebInstall(next);
+  expect(pendingWebInstall(location.origin)?.state).toBe(active.state);
+  dismissWebInstall();
+  expect(pendingWebInstall(location.origin)?.state).toBe(next.state);
+  dismissWebInstall();
+  expect(pendingWebInstall(location.origin)).toBeNull();
 });

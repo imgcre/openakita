@@ -4187,6 +4187,15 @@
     "wideImpactWarning": "Quarantining this resets agent.db — token usage history and legacy stats will be cleared."
   },
   "marketplaceInstall": {
+    "webReturn": {
+      "sending": "Returning to OpenAkita",
+      "sendingHint": "Sending the installation request to the page that opened Marketplace. If it is closed, you can continue here.",
+      "sent": "Installation request delivered",
+      "sentHint": "Switch to the OpenAkita tab that opened Marketplace to confirm installation. You can close this page.",
+      "error": "Could not confirm the handoff",
+      "errorHint": "Your installation request is saved. Check the original OpenAkita page or retry to confirm delivery.",
+      "close": "Close this page"
+    },
     "tasks": {
       "collapse": "Collapse installation panel",
       "title": "Resource installations",
