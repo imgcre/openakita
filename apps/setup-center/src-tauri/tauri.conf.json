@@ -20,6 +20,11 @@
       "resources/bootstrap/"
     ],
     "createUpdaterArtifacts": true,
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/openakita.desktop.hbs"
+      }
+    },
     "macOS": {
       "entitlements": "Entitlements.plist",
       "signingIdentity": "-",

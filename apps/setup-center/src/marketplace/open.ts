@@ -1,14 +1,16 @@
-import { invoke, IS_TAURI, openExternalUrl } from "../platform";
+import { invoke, IS_TAURI, IS_CAPACITOR, IS_MOBILE_BROWSER, openExternalUrl } from "../platform";
+import { marketplaceOpenErrorKey as mobileOpenErrorKey, openMarketplace } from "./mobile";
 import { safeFetchResponse } from "../providers";
 import { isTauriRemoteMode } from "../platform/auth";
 import { dispatchAccountStatusChanged, type AccountStatusSummary } from "../utils/accountStatusEvents";
 import { buildMarketplaceContextUrl, buildMarketplaceHandoffUrl, marketplaceOrigin } from "./navigation";
+import { openWebMarketplace } from './web';
 
 export function marketplaceOpenErrorKey(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error);
   return code === "marketplace_desktop_connection_failed"
     ? "topbar.marketplaceDesktopConnectionFailed"
-    : "topbar.openMarketplaceFailed";
+    : mobileOpenErrorKey(error);
 }
 
 export async function desktopAccountHeaders(): Promise<Record<string, string>> {
@@ -26,6 +28,11 @@ export async function desktopAccountHeaders(): Promise<Record<string, string>> {
 export async function openMarketplaceWithAccount(
   version: string, apiBaseUrl?: string, next = "/", configuredOrigin?: string,
 ): Promise<void> {
+  if (IS_CAPACITOR) return openMarketplace(version, next);
+  if (!IS_TAURI) {
+    openWebMarketplace(version, next, configuredOrigin, !IS_MOBILE_BROWSER);
+    return;
+  }
   const origin = marketplaceOrigin(configuredOrigin);
   let target = buildMarketplaceContextUrl(version, next, origin);
   if (IS_TAURI && !isTauriRemoteMode() && apiBaseUrl) {

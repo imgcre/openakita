@@ -482,7 +482,7 @@ def _mount_web_frontend(app: FastAPI) -> None:
     """
     import mimetypes
 
-    from fastapi.staticfiles import StaticFiles
+    from openakita.api.web_static import WebStaticFiles
 
     # On some Windows systems the registry maps .js to text/plain, causing
     # browsers to reject ES module scripts.  Ensure correct MIME types are
@@ -504,7 +504,7 @@ def _mount_web_frontend(app: FastAPI) -> None:
         return
 
     logger.info(f"Mounting web frontend from {web_dist}")
-    app.mount("/web", StaticFiles(directory=str(web_dist), html=True), name="web-frontend")
+    app.mount("/web", WebStaticFiles(directory=str(web_dist), html=True), name="web-frontend")
 
 
 def _build_on_stop_org_cancel_inflight_handler(

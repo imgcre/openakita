@@ -48,3 +48,23 @@ def trusted_marketplace_origin(value: str) -> str:
     ):
         raise HTTPException(status_code=400, detail="marketplace_origin_invalid")
     return candidate
+
+
+def require_marketplace_access(request: Request) -> None:
+    """Allow the native desktop or an explicitly authenticated instance client.
+
+    Remote App installs use the instance's own account and access token. Browser
+    cookies, query-string tokens and the local-IP exemption cannot grant access
+    to installation proofs. Browser identity handoff remains desktop-only.
+    """
+    supplied = request.headers.get("Authorization", "")
+    config = getattr(request.app.state, "web_access_config", None)
+    if config is not None and supplied.startswith("Bearer "):
+        if config.validate_access_token(supplied[7:]):
+            return
+    try:
+        require_desktop_account(request)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=403, detail={"code": "marketplace_instance_auth_required"}
+        ) from exc

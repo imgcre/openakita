@@ -158,11 +158,12 @@ jobs:
       - name: Run L0 smoke (root-cause regression guards)
         run: pytest tests/smoke/ -x -v
 
-  # ── L1 单元测试 (每次 Push/PR, <30s) ──
+  # ── L1 单元测试 (每次 Push/PR) ──
   unit_tests:
     needs: [changes, smoke_tests]
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python
@@ -176,7 +177,7 @@ jobs:
           pip install -e ".[dev]"
           pip install -e ./openakita-plugin-sdk
       - name: Run L1 unit tests
-        run: pytest tests/unit/ -x -v
+        run: pytest tests/unit/ -x -v -o faulthandler_timeout=60
 
   # ── L2 组件测试 (每次 Push/PR, <2min) ──
   component_tests:
@@ -598,6 +599,9 @@ jobs:
           npx tauri bundle
           --bundles "deb"
           --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Verify Linux DEB URI handoff
+        run: python scripts/verify_linux_deb.py
 
       - name: Verify bundle exists
         run: |

@@ -16,7 +16,9 @@ if (__BUILD_TARGET__ === "tauri") {
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import "./i18n";
+import i18n from "./i18n";
+import { toast } from 'sonner';
+import { consumeDesktopWebSession } from './utils/desktopWebSession';
 import "./globals.css";
 import "./styles.css";
 import { App } from "./App";
@@ -26,6 +28,11 @@ import { StaleBundleBanner } from "./components/StaleBundleBanner";
 import { initTheme } from "./theme";
 import { logger } from "./platform/logger";
 import { copyToClipboard, readFromClipboard } from "./utils/clipboard";
+import { captureWebInstallReturn } from './marketplace/web';
+import { IS_WEB } from './platform/detect';
+import { MarketplaceWebReturn } from './components/MarketplaceWebReturn';
+
+if (IS_WEB) captureWebInstallReturn();
 
 // Initialize theme before rendering to catch OS changes
 initTheme();
@@ -422,6 +429,10 @@ waitForBackend().then((ok) => {
   }
 });
 
+const webSessionReady = IS_WEB ? consumeDesktopWebSession().catch(() => {
+  toast.error(i18n.t('topbar.webSessionFailed'));
+}) : Promise.resolve();
+void webSessionReady.then(() => {
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {/* P-RC-2 P2.8: stale-bundle banner. Lives outside
@@ -433,7 +444,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <PetView />
       ) : (
         <TooltipProvider>
-          <App />
+          {IS_WEB ? <MarketplaceWebReturn><App /></MarketplaceWebReturn> : <App />}
         </TooltipProvider>
       )}
     </GlobalErrorBoundary>
@@ -442,5 +453,4 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
 
 // In case App mounts but doesn't emit.
 requestAnimationFrame(() => hideBoot(true));
-
-
+});

@@ -9,6 +9,7 @@ import { MarketplaceInstallDialog } from "../MarketplaceInstallDialog";
 
 vi.mock("../../platform", () => ({
   IS_TAURI: true,
+  IS_CAPACITOR: false,
   getCurrentDeepLinks: vi.fn(async () => [
     `openakita://marketplace/install?token=${"a".repeat(64)}&endpoint=https://marketplace.openakita.cn`,
   ]),
@@ -26,6 +27,7 @@ const job = {
 };
 
 beforeEach(async () => {
+  localStorage.clear();
   vi.clearAllMocks();
   vi.mocked(safeFetchResponse).mockReset();
   vi.mocked(safeFetch).mockReset();

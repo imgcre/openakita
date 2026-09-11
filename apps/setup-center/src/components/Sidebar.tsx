@@ -13,6 +13,7 @@ import {
   IconAlertCircle,
 } from "../icons";
 import logoUrl from "../assets/logo.png";
+import { AccountDeviceLoginDialog } from "./AccountDeviceLoginDialog";
 import { safeFetch } from "../providers";
 import {
   ACCOUNT_STATUS_CHANGED_EVENT,
@@ -24,7 +25,9 @@ import {
   getAccountGeneration,
   loadAccountCapability,
   refreshOpenAkitaAccountEntitlements,
+  watchNativeAccountLogin,
   type AccountCapability,
+  type DeviceAuthorizationPrompt,
 } from "../utils/accountLogin";
 
 export type SidebarProps = {
@@ -43,6 +46,7 @@ export type SidebarProps = {
   serviceRunning: boolean;
   onRefreshStatus: () => Promise<void>;
   mobileOpen?: boolean;
+  onCloseMobile?: () => void;
   httpApiBase?: string;
   unreadFeedbackCount?: number;
   pendingApprovalsCount?: number;
@@ -109,7 +113,7 @@ export function Sidebar({
   disabledViews,
   storeVisible,
   serviceRunning,
-  onRefreshStatus, mobileOpen, httpApiBase,
+  onRefreshStatus, mobileOpen, onCloseMobile, httpApiBase,
   unreadFeedbackCount, pendingApprovalsCount,
   onCheckForUpdate, updateCheckPending = false, desktopVersion,
 }: SidebarProps) {
@@ -150,8 +154,25 @@ export function Sidebar({
   const [accountLoginPending, setAccountLoginPending] = useState(false);
   const [accountActionPending, setAccountActionPending] = useState<"refresh" | "logout" | null>(null);
   const [accountLoginError, setAccountLoginError] = useState<string | null>(null);
+  const [accountAuthorizationUrl, setAccountAuthorizationUrl] = useState<string | null>(null);
+  const [accountDevicePrompt, setAccountDevicePrompt] = useState<DeviceAuthorizationPrompt | null>(null);
+  const [accountDevicePreparing, setAccountDevicePreparing] = useState(false);
+  const accountLoginAbort = useRef<AbortController | null>(null);
   const accountAreaRef = useRef<HTMLDivElement>(null);
   const accountSnapshotRequest = useRef(0);
+
+  useEffect(() => () => { accountLoginAbort.current?.abort(); }, [httpApiBase]);
+
+  useEffect(() => {
+    if (!httpApiBase || !serviceRunning) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void watchNativeAccountLogin(httpApiBase, snapshot => {
+      if (!disposed) setAccountSnapshot(snapshot);
+    }).then(cleanup => { if (disposed) cleanup(); else stop = cleanup; })
+      .catch(() => { /* Older App shells report an upgrade hint when sign-in is requested. */ });
+    return () => { disposed = true; stop?.(); };
+  }, [httpApiBase, serviceRunning]);
 
   const refreshAccountCapability = useCallback(async () => {
     if (!httpApiBase || !serviceRunning) {
@@ -354,21 +375,56 @@ export function Sidebar({
     setAccountMenuOpen(false);
     setAccountLoginPending(true);
     setAccountLoginError(null);
+    setAccountAuthorizationUrl(null);
+    const controller = new AbortController();
+    accountLoginAbort.current = controller;
     const notification = toast.loading(t("account.waitingForAuthorization"));
     try {
-      const snapshot = await connectOpenAkitaAccount(httpApiBase);
+      const snapshot = await connectOpenAkitaAccount(httpApiBase, {
+        signal: controller.signal,
+        onAuthorizationUrl: setAccountAuthorizationUrl,
+        onNativePreparing: () => { onCloseMobile?.(); },
+        onDevicePreparing: () => {
+          onCloseMobile?.();
+          setAccountDevicePreparing(true);
+          toast.dismiss(notification);
+        },
+        onDeviceAuthorization: prompt => { setAccountDevicePreparing(false); setAccountDevicePrompt(prompt); },
+      });
       setAccountSnapshot(snapshot);
       toast.success(t("account.connected"), { id: notification });
     } catch (reason) {
       const rawMessage = reason instanceof Error ? reason.message : String(reason);
-      const message = rawMessage === "account_login_expired" ? t("account.loginExpired") : rawMessage;
+      if (rawMessage === "account_login_cancelled") {
+        toast.dismiss(notification);
+        return;
+      }
+      const errorKeys: Record<string, string> = {
+        account_login_expired: "account.loginExpired",
+        account_popup_blocked: "account.popupBlocked",
+        account_device_not_supported: "account.deviceNotSupported",
+        account_device_start_failed: "account.deviceStartFailed",
+        account_authorization_denied: "account.authorizationDenied",
+        account_token_exchange_failed: "account.tokenExchangeFailed",
+        account_native_unavailable: "account.nativeUnavailable",
+        account_native_verification_failed: "account.nativeVerificationFailed",
+        account_native_invalid_response: "account.nativeInvalidResponse",
+        account_native_invalid_request: "account.nativeInvalidResponse",
+        account_native_delivery_failed: "account.nativeDeliveryFailed",
+        account_native_not_supported: "account.nativeNotSupported",
+      };
+      const message = errorKeys[rawMessage] ? t(errorKeys[rawMessage]) : rawMessage;
       setAccountLoginError(message);
       toast.error(t("account.loginFailed"), { id: notification, description: message });
       setAccountMenuOpen(true);
     } finally {
       setAccountLoginPending(false);
+      setAccountAuthorizationUrl(null);
+      setAccountDevicePrompt(null);
+      setAccountDevicePreparing(false);
+      accountLoginAbort.current = null;
     }
-  }, [accountEnabled, httpApiBase, serviceRunning, t]);
+  }, [accountEnabled, httpApiBase, onCloseMobile, serviceRunning, t]);
 
   const refreshAccountEntitlements = useCallback(async () => {
     if (!accountEnabled || !httpApiBase) return;
@@ -659,6 +715,27 @@ export function Sidebar({
                 <span>{accountLoginError}</span>
               </div>
             )}
+            {accountEnabled && accountLoginPending && accountAuthorizationUrl && (
+              <a
+                className="sidebarAccountMenuItem"
+                href={accountAuthorizationUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                role="menuitem"
+              >
+                {t("account.reopenAuthorization")}
+              </a>
+            )}
+            {accountEnabled && accountLoginPending && (
+              <button
+                type="button"
+                className="sidebarAccountMenuItem"
+                onClick={() => accountLoginAbort.current?.abort()}
+                role="menuitem"
+              >
+                {t("account.cancelLogin")}
+              </button>
+            )}
             {accountEnabled && accountNeedsSync && accountSnapshot?.status_reason && (
               <div className="sidebarAccountMenuNotice" role="status">
                 <IconAlertCircle size={15} aria-hidden="true" />
@@ -779,6 +856,7 @@ export function Sidebar({
           )}
         </button>
       </div>
+      <AccountDeviceLoginDialog preparing={accountDevicePreparing} prompt={accountDevicePrompt} onCancel={() => accountLoginAbort.current?.abort()} />
     </aside>
   );
 }

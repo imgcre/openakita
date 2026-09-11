@@ -60,12 +60,22 @@ export async function listen<T>(
 }
 
 export async function getCurrentDeepLinks(): Promise<string[]> {
+  if (IS_CAPACITOR) {
+    const { App } = await import('@capacitor/app');
+    const result = await App.getLaunchUrl();
+    return result?.url ? [result.url] : [];
+  }
   if (!IS_TAURI) return [];
   const { getCurrent } = await import("@tauri-apps/plugin-deep-link");
   return (await getCurrent()) ?? [];
 }
 
 export async function onDeepLinkOpen(handler: (urls: string[]) => void): Promise<() => void> {
+  if (IS_CAPACITOR) {
+    const { App } = await import('@capacitor/app');
+    const listener = await App.addListener('appUrlOpen', ({ url }) => handler([url]));
+    return () => { void listener.remove(); };
+  }
   if (!IS_TAURI) return () => {};
   const [{ onOpenUrl }, unlistenForwarded] = await Promise.all([
     import("@tauri-apps/plugin-deep-link"),

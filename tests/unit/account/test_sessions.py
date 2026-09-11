@@ -166,6 +166,6 @@ async def test_old_attempt_timeout_does_not_close_new_listener(monkeypatch):
     server = subject._server = AsyncMock()
     old = LoginAttempt("old", "s", "v", "https://example.com", generation=1)
     monkeypatch.setattr("openakita.account.oidc.asyncio.sleep", AsyncMock())
-    await subject._expire_attempt(old)
+    subject._expire_attempt(old)
     server.close.assert_not_called()
     assert subject._generation == 2

@@ -121,6 +121,7 @@ import { ModalOverlay } from "./components/ModalOverlay";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { AppUpdateDialog, UpdateProgressToast } from "./components/AppUpdateDialog";
+import { INSTALL_TASK_OPEN } from './marketplace/installTasks';
 import { MarketplaceInstallDialog } from "./components/MarketplaceInstallDialog";
 import { useNotifications } from "./hooks/useNotifications";
 import { notifySuccess, notifyError, notifyLoading, dismissLoading } from "./utils/notify";
@@ -519,6 +520,12 @@ function MainApp() {
   const [inboxRefreshKey, setInboxRefreshKey] = useState(0);
   const [inboxDialogOpen, setInboxDialogOpen] = useState(false);
   const [inboxUnreadCount, setInboxUnreadCount] = useState(0);
+  useEffect(() => {
+    const revealInstall = () => { setInboxDialogOpen(false); setMobileSidebarOpen(false); };
+    window.addEventListener(INSTALL_TASK_OPEN, revealInstall);
+    return () => window.removeEventListener(INSTALL_TASK_OPEN, revealInstall);
+  }, []);
+
   const [unreadFeedbackCount, setUnreadFeedbackCount] = useState(0);
   const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
   const [disabledViews, setDisabledViews] = useState<string[]>([]);
@@ -1998,7 +2005,10 @@ function MainApp() {
   }
 
   function httpApiBase(): string {
-    if (IS_WEB || IS_CAPACITOR) return apiBaseUrl || window.location.origin;
+    // A browser Web session belongs to the server that served the page. Native
+    // connection state (including a desktop loopback default) must not retarget it.
+    if (IS_WEB) return window.location.origin;
+    if (IS_CAPACITOR) return apiBaseUrl || window.location.origin;
     return dataMode === "remote" ? apiBaseUrl : "http://127.0.0.1:18900";
   }
 
@@ -4902,8 +4912,10 @@ function MainApp() {
         <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
         <Toaster position="top-right" richColors closeButton />
         <MarketplaceInstallDialog
+          discoverTasks
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
+          onManageServers={() => setShowServerManager(true)}
         />
       </div>
       </EnvFieldContext.Provider>
@@ -5040,6 +5052,7 @@ function MainApp() {
         view={view}
         onViewChange={(v) => navigateToView(v)}
         mobileOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
         configMode={configMode}
         onEnterConfig={() => {
           if (view !== "wizard" && view !== "identity") lastAppViewRef.current = view;
@@ -5169,7 +5182,7 @@ function MainApp() {
             setWebAuthed(false);
           } : undefined}
           webAccessUrl={IS_TAURI && (serviceStatus?.running ?? false) ? `${apiBaseUrl || "http://127.0.0.1:18900"}/web` : undefined}
-          apiBaseUrl={apiBaseUrl || "http://127.0.0.1:18900"}
+          apiBaseUrl={httpApiBase()}
           onToggleMobileSidebar={isMobile ? () => setMobileSidebarOpen((v) => !v) : undefined}
           serverName={IS_CAPACITOR ? (getActiveServer()?.name || undefined) : undefined}
           onServerManager={IS_CAPACITOR ? () => setShowServerManager(true) : undefined}
@@ -5470,8 +5483,10 @@ function MainApp() {
         />
         <Toaster position="top-right" richColors closeButton />
         <MarketplaceInstallDialog
+          discoverTasks
           apiBaseUrl={IS_TAURI ? DEFAULT_LOCAL_API_BASE : httpApiBase()}
           desktopVersion={desktopVersion}
+          onManageServers={() => setShowServerManager(true)}
         />
 
         {view === "wizard" ? (() => {

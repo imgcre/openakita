@@ -10,6 +10,7 @@ import PluginManagerView from "../../views/PluginManagerView";
 vi.mock("../../providers", () => ({ safeFetchResponse: vi.fn(), safeFetch: vi.fn() }));
 vi.mock("../../platform", () => ({
   IS_TAURI: true,
+  IS_CAPACITOR: false,
   getCurrentDeepLinks: vi.fn(async () => [
     `openakita://marketplace/install?token=${"b".repeat(64)}&endpoint=https://marketplace.openakita.cn`,
   ]),

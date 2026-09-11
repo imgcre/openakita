@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), open: vi.fn(), fetch: vi.fn(), remote: vi.fn() }));
-vi.mock("../../platform", () => ({ IS_TAURI: true, invoke: mocks.invoke, openExternalUrl: mocks.open }));
+vi.mock("../../platform", () => ({ IS_TAURI: true, IS_CAPACITOR: false, invoke: mocks.invoke, openExternalUrl: mocks.open }));
 vi.mock("../../providers", () => ({ safeFetchResponse: mocks.fetch }));
 vi.mock("../../platform/auth", () => ({ isTauriRemoteMode: mocks.remote }));
 import { marketplaceOpenErrorKey, openMarketplaceWithAccount } from "../open";

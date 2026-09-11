@@ -16,9 +16,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
+import time
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+
+from openakita.account.desktop import require_desktop_account
 
 from ..auth import (
     REFRESH_COOKIE_NAME,
@@ -115,6 +120,50 @@ def _validate_password_strength(password: str) -> str | None:
 # think they "won" the setup. The lock is module-scoped (one server, one
 # WebAccessConfig instance) so an asyncio.Lock is sufficient.
 _setup_lock = asyncio.Lock()
+
+
+@router.post("/desktop-web-session")
+async def create_desktop_web_session(request: Request, response: Response):
+    """Transfer explicitly authorized desktop access without exposing its native key."""
+    require_desktop_account(request)
+    origin = str(request.base_url).rstrip("/")
+    if urlsplit(origin).hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return JSONResponse(status_code=400, content={"detail": "invalid_web_origin"})
+    now = time.monotonic()
+    grants = getattr(request.app.state, "desktop_web_grants", {})
+    grants = {key: value for key, value in grants.items() if value[1] > now}
+    if len(grants) >= 128:
+        return JSONResponse(status_code=429, content={"detail": "too_many_web_sessions"})
+    ticket = secrets.token_urlsafe(32)
+    grants[ticket] = (origin, now + 60, _get_config(request).token_version)
+    request.app.state.desktop_web_grants = grants
+    response.headers["Cache-Control"] = "no-store"
+    return {"url": f"{origin}/web/#openakita-web-session={ticket}"}
+
+
+@router.post("/desktop-web-session/consume")
+async def consume_desktop_web_session(request: Request, response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    if not is_trusted_local(request) or any(
+        key in request.headers for key in ("forwarded", "x-forwarded-for")
+    ):
+        return JSONResponse(status_code=403, content={"detail": "invalid_web_session"})
+    body = await _parse_body(request)
+    ticket = body.get("ticket") if isinstance(body, dict) else None
+    grants = getattr(request.app.state, "desktop_web_grants", {})
+    grant = grants.get(ticket) if isinstance(ticket, str) else None
+    config = _get_config(request)
+    if (
+        not grant
+        or grant[1] <= time.monotonic()
+        or grant[2] != config.token_version
+        or grant[0] != str(request.base_url).rstrip("/")
+        or request.headers.get("origin") != grant[0]
+    ):
+        return JSONResponse(status_code=403, content={"detail": "invalid_web_session"})
+    del grants[ticket]
+    _set_refresh_cookie(response, config.create_refresh_token())
+    return {"access_token": config.create_access_token(), "token_type": "bearer"}
 
 
 # ── POST /api/auth/login ──

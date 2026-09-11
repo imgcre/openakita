@@ -1,15 +1,18 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import "../../i18n";
 import { Sidebar } from "../Sidebar";
-import { loadAccountCapability } from "../../utils/accountLogin";
+import { connectOpenAkitaAccount, loadAccountCapability } from "../../utils/accountLogin";
+import { patchInstall, trackInstall } from '../../marketplace/installTasks';
 
 vi.mock("../../utils/accountLogin", () => ({
+  getAccountGeneration: () => 0,
   connectOpenAkitaAccount: vi.fn(),
   disconnectOpenAkitaAccount: vi.fn(),
   loadAccountCapability: vi.fn(),
   refreshOpenAkitaAccountEntitlements: vi.fn(),
+  watchNativeAccountLogin: vi.fn(async () => () => {}),
 }));
 
 vi.mock("sonner", () => ({
@@ -17,13 +20,16 @@ vi.mock("sonner", () => ({
     error: vi.fn(),
     loading: vi.fn(),
     success: vi.fn(),
+    dismiss: vi.fn(),
   },
 }));
 
-function renderSidebar() {
+function renderSidebar(onCloseMobile?: () => void) {
   return render(
     <Sidebar
       collapsed={false}
+      mobileOpen={Boolean(onCloseMobile)}
+      onCloseMobile={onCloseMobile}
       onToggleCollapsed={vi.fn()}
       view="chat"
       onViewChange={vi.fn()}
@@ -44,8 +50,56 @@ function renderSidebar() {
 
 describe("Sidebar account distribution mode", () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("[]", { status: 200 })));
+  });
+
+  it('keeps installation actions out of the application menu even when tasks exist', async () => {
+    vi.mocked(loadAccountCapability).mockResolvedValue({ enabled: false, mode: 'disabled', provider: null,
+      display_name: null, supports_entitlements: false });
+    const job = { id: 'current', status: 'installing' as const, resource_type: 'skill' as const,
+      resource_name: 'Current skill', progress: null, version: '1', permissions: [], dependencies: [] };
+    const task = trackInstall('http://localhost:18900', job);
+    patchInstall(task.key, { hidden: true, background: true });
+    const closeSidebar = vi.fn();
+    renderSidebar(closeSidebar);
+    fireEvent.click(await screen.findByRole('button', { name: /应用菜单|App menu/i }));
+    expect(screen.queryByRole('menuitem', { name: /继续安装|Resume installation/ })).toBeNull();
+    expect(closeSidebar).not.toHaveBeenCalled();
+  });
+
+  it("closes mobile navigation during device preparation and keeps login alive until cancelled", async () => {
+    vi.mocked(loadAccountCapability).mockResolvedValue({
+      enabled: true, mode: "openakita", provider: "openakita",
+      display_name: "OpenAkita", supports_entitlements: true,
+    });
+    let loginOptions: Parameters<typeof connectOpenAkitaAccount>[1];
+    vi.mocked(connectOpenAkitaAccount).mockImplementation((_base, options = {}) => {
+      loginOptions = options;
+      options.onDevicePreparing?.();
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => reject(new Error("account_login_cancelled")));
+      });
+    });
+    const onCloseMobile = vi.fn();
+    const { container, unmount } = renderSidebar(onCloseMobile);
+    const menuButton = await screen.findByRole("button", { name: /未登录|Signed out/i });
+    fireEvent.click(menuButton);
+    fireEvent.click(container.querySelector<HTMLButtonElement>(".sidebarAccountMenuProfile")!);
+    await waitFor(() => expect(onCloseMobile).toHaveBeenCalledOnce());
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(loginOptions!.signal!.aborted).toBe(false);
+    act(() => loginOptions!.onDeviceAuthorization?.({
+      userCode: "ABCD-EFGH", verificationUri: "https://account.example/device",
+      authorizationUrl: "https://account.example/device?user_code=ABCD-EFGH",
+      openAuthorization: vi.fn(async () => undefined),
+    }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("ABCD-EFGH");
+    fireEvent.click(screen.getByRole("button", { name: /取消登录|Cancel sign-in/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(loginOptions!.signal!.aborted).toBe(true);
+    unmount();
   });
 
   it("renders an account-free application menu when the capability is disabled", async () => {
