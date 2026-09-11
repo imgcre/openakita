@@ -50,7 +50,7 @@ it('rejects an installation link opened in a different tab without originating c
   expect(location.hash).toBe('');
 });
 
-it('gives desktop market tabs independent return contexts and detaches the opener', () => {
+it('gives desktop market tabs independent return contexts and retains the opener for direct delivery', () => {
   const parent = new URL(buildWebMarketplaceUrl('1.27.40', location.origin));
   const tabs: { sessionStorage: Storage; opener: unknown; location: { replace: ReturnType<typeof vi.fn> }; close: ReturnType<typeof vi.fn> }[] = [];
   vi.spyOn(window, 'open').mockImplementation(() => {
@@ -62,7 +62,7 @@ it('gives desktop market tabs independent return contexts and detaches the opene
         get length() { return values.size; }, clear: () => values.clear(),
         key: (index: number) => [...values.keys()][index] ?? null },
       opener: window as unknown,
-      location: { replace: vi.fn(() => expect(tab.opener).toBeNull()) }, close: vi.fn(),
+      location: { replace: vi.fn(() => expect(tab.opener).toBe(window)) }, close: vi.fn(),
     };
     tabs.push(tab);
     return tab as unknown as Window;
@@ -75,6 +75,7 @@ it('gives desktop market tabs independent return contexts and detaches the opene
     const url = new URL(tabs[index].location.replace.mock.calls[0][0]);
     expect(contexts[index].base).toBe(location.origin);
     expect(contexts[index].state).toBe(url.searchParams.get('state'));
+    expect(url.searchParams.get('channel')).toBe('post-message');
     expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web/marketplace-return');
   }
   // Opening new tabs must not overwrite a pending installation in the original.

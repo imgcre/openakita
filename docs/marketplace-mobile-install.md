@@ -57,18 +57,31 @@ cannot silently choose a server.
 
 The Web interface opens Marketplace with `client=web`. Mobile browsers navigate
 in the same tab. Desktop browsers open a new tab, keeping the original OpenAkita
-page available. On return, a lightweight handoff page delivers the request to
-the originating page, which shows the existing installation confirmation.
-The new tab receives its own session context while still same-origin, then drops
-its opener before navigating to Marketplace. If popups are blocked, navigation
-falls back to the current tab. No cross-origin opener is retained.
+page available. Desktop market tabs retain their opener and advertise
+`channel=post-message`. Resource details, the library and version history send
+instructions directly to that window, leaving the Marketplace page and scroll
+position intact. The recipient checks the exact market window, origin, session
+state, expiry and current backend before persisting and acknowledging delivery.
+Only then does Marketplace report receipt and try to focus the source tab.
+If popups or local storage are unavailable, opening Marketplace retains the
+existing same-tab flow.
 
-Desktop handoff uses a same-origin BroadcastChannel and a registry of sessions
+If the opener has closed, refreshed or been isolated by browser policy, or no
+acknowledgment arrives, Marketplace offers an explicit “Open OpenAkita to continue
+installing” action. It opens the same instruction in a new tab and preserves the
+details page. The fallback can initialize only from an unexpired session issued
+locally by OpenAkita, stored under its random state in localStorage. These
+records contain no account credentials or installation tokens and are pruned
+when opening Marketplace. The instruction remains in the fragment.
+
+Fallback handoff uses a same-origin BroadcastChannel and a registry of sessions
 in the originating tab's sessionStorage. Each page runtime has a fresh random
 instance ID: the live originating instance takes precedence over a duplicated
 tab, while a refreshed source can offer its persisted session. The return page
 selects exactly one responder. IndexedDB serializes receipt claims, including
-fallback claims, so a delayed delivery cannot race a local installation. A
+fallback claims, so a delayed direct delivery cannot race a local installation.
+Direct instructions use the unique ticket as their receipt key, allowing
+multiple resources to be installed from the same market session. A
 missing acknowledgment after a claim prompts retry instead of silently installing
 in another tab. Accepted requests are persisted and queued in the source tab;
 closing the current dialog advances to the next confirmation. Preparation and
@@ -79,7 +92,8 @@ returning page continues the existing local confirmation flow. Unsupported
 BroadcastChannel/IndexedDB environments use that same local flow. After receipt
 is acknowledged, the source tries to focus and the return page tries to close;
 browser restrictions leave a clear instruction to switch to the original tab.
-Marketplace itself needs no protocol or deployment change for this handoff.
+Only the temporary fallback page may close after successful handoff; Marketplace
+never navigates away or closes during direct delivery.
 Its per-tab context lasts 30 minutes and contains a random state, the original
 Web page and the target API base. Web targets always use the page's origin,
 independently of native desktop connection state. Marketplace receives only the clean Web return
@@ -87,7 +101,7 @@ address (origin and path), state and version. The original query/hash and instan
 credentials stay in OpenAkita's origin. State generation uses `getRandomValues`,
 which is available on LAN HTTP pages as well as HTTPS pages.
 
-After acquisition, both resource details and the resource library return to that
+For same-tab flows and explicit fallbacks, Marketplace returns to that
 Web address with a one-use instruction in the URL fragment. OpenAkita captures
 and clears the fragment before routing or login. It validates the state, expiry,
 page, Marketplace origin and current API target, then uses the existing
@@ -111,8 +125,9 @@ Hashed static assets retain their normal caching behavior. Reverse proxies must
 forward this callback path to OpenAkita and honor the entry's cache policy.
 
 Ship the updated OpenAkita backend together with the rebuilt Web assets and
-restart the backend to enable this entry. The existing Marketplace accepts this
-callback path; this handoff fix requires no Marketplace, Account or APK update.
+restart the backend to enable this entry. Deploy the updated Marketplace Web
+alongside OpenAkita Web to enable direct messaging. No Account or APK update is
+required. Existing mobile and desktop native protocol flows are unchanged.
 Verify an HTTP LAN address and HTTPS reverse proxy, refresh before
 confirmation, background completion/permission recovery and an expired link.
 

@@ -5,6 +5,7 @@ const KEY = 'openakita.marketplace.web.v1';
 const ERROR_KEY = KEY + '.error';
 const TTL = 30 * 60_000;
 const QUEUE = KEY + '.queue';
+const SESSIONS = KEY + '.session.';
 export type WebInstallContext = {
   state: string; base: string; endpoint: string; returnUrl: string; expires: number;
   token?: string; jobId?: string; consumed?: boolean;
@@ -50,20 +51,31 @@ export function openWebMarketplace(version: string, next: string, origin: string
     return;
   }
   try {
-    // Seed the new tab while it is same-origin. Opening the external URL with
-    // noopener immediately would leave the returning tab without its context.
-    // Each market tab owns a separate state, so concurrent returns stay isolated.
-    const url = buildWebMarketplaceUrl(version, location.origin, next, origin, tab.sessionStorage);
+    // Seed legacy return context while same-origin. Each market window also has
+    // a separate direct-message session, so installs target its exact opener.
+    const url = new URL(buildWebMarketplaceUrl(version, location.origin, next, origin, tab.sessionStorage));
+    const context: WebInstallContext = JSON.parse(tab.sessionStorage.getItem(KEY)!);
     const relay = webInstallRelay();
     if (relay) {
-      const context: WebInstallContext = JSON.parse(tab.sessionStorage.getItem(KEY)!);
       relay.register(context);
+      relay.registerMarket(context, tab);
       write({ ...context, relay: true }, tab.sessionStorage);
     }
+    // Only locally issued, expiring contexts can initialize an explicit fallback
+    // in a new tab. No instance credentials or instruction tokens are stored here.
+    try {
+      for (const key of Object.keys(localStorage)) {
+        if (!key.startsWith(SESSIONS)) continue;
+        try { if (JSON.parse(localStorage.getItem(key)!).expires > Date.now()) continue; } catch { /* Expired/invalid. */ }
+        localStorage.removeItem(key);
+      }
+      localStorage.setItem(SESSIONS + context.state, JSON.stringify(context));
+      url.searchParams.set('channel', 'post-message');
+    } catch { /* Storage denial retains the existing same-tab return flow. */ }
     clearInheritedWebSources(tab.sessionStorage);
     tab.sessionStorage.removeItem(QUEUE);
-    tab.opener = null;
-    tab.location.replace(url);
+    if (!url.searchParams.has('channel')) tab.opener = null;
+    tab.location.replace(url.href);
   } catch (error) {
     tab.close();
     throw error;
@@ -75,7 +87,12 @@ export function openWebMarketplace(version: string, next: string, origin: string
 export function captureWebInstallReturn() {
   if (!location.hash.startsWith('#openakita-install=')) return;
   const params = new URLSearchParams(location.hash.slice(1));
-  const context = read();
+  const direct = params.get('channel') === 'post-message';
+  let context = read();
+  if (direct) {
+    try { context = JSON.parse(localStorage.getItem(SESSIONS + params.get('state')) || 'null'); }
+    catch { context = null; }
+  }
   let restore = location.pathname + location.search;
   try {
     if (!context || context.expires <= Date.now()) throw new Error('marketplace_context_expired');
@@ -89,7 +106,7 @@ export function captureWebInstallReturn() {
     }
     const token = params.get('openakita-install')!;
     if (context.token && context.token !== token) throw new Error('marketplace_install_busy');
-    write({ ...context, token });
+    write({ ...context, token, ...(direct ? { state: token, relay: true } : {}) });
     sessionStorage.removeItem(ERROR_KEY);
     restore = page.pathname + page.search + page.hash;
   } catch (error) {
@@ -137,7 +154,7 @@ export function enqueueWebInstall(context: WebInstallContext) {
     sessionStorage.setItem(QUEUE, JSON.stringify([...queue, incoming]));
   } else write(incoming);
   window.dispatchEvent(new Event(WEB_INSTALL_ARRIVED));
-  window.focus();
+  try { window.focus(); } catch { /* Focus is best effort, persistence is not. */ }
 }
 
 export function webReturnToRelay(): WebInstallContext | null {

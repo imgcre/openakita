@@ -61,6 +61,7 @@ export class WebInstallRelay {
   readonly instance = randomRelayId();
   private sources: Source[];
   private stop?: () => void;
+  private marketWindows = new Map<string, Window>();
   constructor(private storage: Storage, private channel: RelayChannel,
     private claim = claimWebReturn) {
     try { this.sources = JSON.parse(storage.getItem(SOURCES) || '[]'); }
@@ -72,6 +73,10 @@ export class WebInstallRelay {
     this.sources = [...this.sources.filter(source => source.expires > Date.now()),
       { ...context, sourceInstance: this.instance }];
     this.storage.setItem(SOURCES, JSON.stringify(this.sources));
+  }
+
+  registerMarket(context: WebInstallContext, market: Window) {
+    this.marketWindows.set(context.state, market);
   }
 
   listen(base: () => string, receive: (context: WebInstallContext) => void) {
@@ -104,8 +109,37 @@ export class WebInstallRelay {
         } catch { /* The return page retains the instruction and shows a retry. */ }
       }
     };
+    const onDirect = async (event: MessageEvent) => {
+      const data = event.data;
+      if (data?.type !== 'openakita:install-request:v1' ||
+        this.marketWindows.get(data.state) !== event.source) return;
+      const session = this.sources.find(item => item.state === data.state);
+      if (!session || session.expires <= Date.now() || session.endpoint !== event.origin ||
+        session.base !== base() || !/^[a-f0-9]{64}$/.test(data.token || '')) return;
+      // Each ticket owns a receipt, allowing several installations per market tab.
+      const context = { ...session, state: data.token, token: data.token, relay: true };
+      if (!this.sources.some(item => item.state === context.state)) this.register(context);
+      const source = this.sources.find(item => item.state === context.state)!;
+      try {
+        const receipt = await this.claim(context, this.instance);
+        if (session.base !== base() || session.expires <= Date.now()) return;
+        if (receipt.receiver === this.instance && !source.acceptedBy) {
+          receive(context);
+          source.acceptedBy = this.instance;
+          this.storage.setItem(SOURCES, JSON.stringify(this.sources));
+        }
+        if (receipt.receiver === this.instance || receipt.receiver === source.acceptedBy) {
+          (event.source as Window).postMessage({ type: 'openakita:install-ack:v1',
+            state: data.state, token: data.token }, event.origin);
+        }
+      } catch { /* Keep the same instruction available for explicit fallback. */ }
+    };
     this.channel.addEventListener('message', onMessage);
-    this.stop = () => this.channel.removeEventListener('message', onMessage);
+    window.addEventListener('message', onDirect);
+    this.stop = () => {
+      this.channel.removeEventListener('message', onMessage);
+      window.removeEventListener('message', onDirect);
+    };
     return this.stop;
   }
 
