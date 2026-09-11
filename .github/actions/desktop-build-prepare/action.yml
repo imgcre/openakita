@@ -59,6 +59,7 @@ runs:
           librsvg2-dev \
           patchelf \
           libfuse2 \
+          xdg-utils \
           rpm
 
     - name: Set up Python
