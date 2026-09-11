@@ -39,16 +39,19 @@ export type InstallTask = {
 };
 export const INSTALL_TASK_OPEN = 'openakita:install-task-open';
 export const INSTALL_TASK_REFRESH = 'openakita:install-task-refresh';
-const STORAGE = 'openakita.marketplace.tasks.v2';
+const STORAGE = 'openakita.marketplace.tasks.v3';
+const PREVIOUS_STORAGE = 'openakita.marketplace.tasks.v2';
 const LEGACY_STORAGE = 'openakita.marketplace.tasks.v1';
 const listeners = new Set<() => void>();
 let snapshot: InstallTask[] = [];
 let stored: string | null | undefined;
 let memoryOnly = false;
+const removed = new Set<string>();
 const baseUrl = (base: string) => base.replace(/\/+$/, '');
 export const taskKey = (base: string, id: string) => `${baseUrl(base)}#${id}`;
 export const isInstalling = (job: InstallJob) => ['downloading', 'verifying', 'installing'].includes(job.status);
 export function taskPhase(task: InstallTask): 'installing' | 'checking' | 'permissions' | 'setup' | 'failed' | 'complete' | 'paused' | 'ready' | 'cancelled' {
+  if (task.job.status === 'failed') return 'failed';
   if (task.error) return 'paused';
   if (isInstalling(task.job)) return 'installing';
   if (task.job.status === 'installed') {
@@ -59,7 +62,7 @@ export function taskPhase(task: InstallTask): 'installing' | 'checking' | 'permi
     }
     return 'complete';
   }
-  if (task.job.status === 'failed' || task.job.status === 'ready' || task.job.status === 'cancelled') return task.job.status;
+  if (task.job.status === 'ready' || task.job.status === 'cancelled') return task.job.status;
   return 'installing';
 }
 export function needsInstallAttention(task: InstallTask) {
@@ -75,13 +78,15 @@ export function getInstallTasks(): InstallTask[] {
   try {
     let value = localStorage.getItem(STORAGE);
     if (value === null) {
+      stored = undefined;
+      const previous = localStorage.getItem(PREVIOUS_STORAGE);
       // v1 imported arbitrary historical jobs and cannot distinguish those from
       // genuinely followed installs. Preserve live work; never alter plugins.
-      const legacy = JSON.parse(localStorage.getItem(LEGACY_STORAGE) || '[]');
-      if (Array.isArray(legacy) && legacy.length) {
-        value = JSON.stringify(legacy.filter(task => task?.job && isInstalling(task.job)));
-        localStorage.setItem(STORAGE, value);
-      }
+      const legacy = JSON.parse(previous || localStorage.getItem(LEGACY_STORAGE) || '[]');
+      const retained = Array.isArray(legacy) ? legacy.filter(task => task?.job &&
+        (previous ? !['failed', 'cancelled', 'complete'].includes(taskPhase(task)) : isInstalling(task.job))) : [];
+      value = JSON.stringify(retained.map(task => ({ ...task, hidden: false })));
+      localStorage.setItem(STORAGE, value);
     }
     if (stored !== value) {
       stored = value;
@@ -96,7 +101,13 @@ function publish(next: InstallTask[]) {
   const completed = next.filter(t => ['complete', 'cancelled'].includes(taskPhase(t)))
     .sort((a, b) => b.changedAt - a.changedAt).slice(0, 20);
   snapshot = [...next.filter(t => !['complete', 'cancelled'].includes(taskPhase(t))), ...completed];
-  try { stored = JSON.stringify(snapshot); localStorage.setItem(STORAGE, stored); } catch { memoryOnly = true; }
+  // Failure notices belong to this page session, not a persistent history.
+  // Keep live work and pending setup recoverable after reload.
+  try {
+    stored = JSON.stringify(snapshot.filter(task => task.job.status !== 'failed' &&
+      !['complete', 'cancelled'].includes(taskPhase(task))));
+    localStorage.setItem(STORAGE, stored);
+  } catch { memoryOnly = true; }
   listeners.forEach(listener => listener());
 }
 export function useInstallTasks() {
@@ -111,6 +122,7 @@ function subscribe(listener: () => void) {
 export function trackInstall(base: string, job: InstallJob, mobile?: PendingInstall, background = false) {
   const all = getInstallTasks();
   const key = taskKey(base, job.id);
+  if (removed.has(key)) return;
   const previous = all.find(t => t.key === key);
   const task: InstallTask = previous ? { ...previous, job, error: undefined, mobile: mobile || previous.mobile }
     : { key, base: baseUrl(base), job, mobile, background, hidden: false, changedAt: Date.now() };
@@ -119,6 +131,12 @@ export function trackInstall(base: string, job: InstallJob, mobile?: PendingInst
   if (task.mobile) task.mobile = { ...task.mobile, token: undefined, jobId: job.id };
   publish([...all.filter(t => t.key !== key), task]);
   return task;
+}
+export function removeFailedInstall(key: string) {
+  const all = getInstallTasks();
+  if (!all.some(task => task.key === key && task.job.status === 'failed')) return;
+  removed.add(key); // Ignore an outstanding poll returning after dismissal.
+  publish(all.filter(task => task.key !== key));
 }
 export function patchInstall(key: string, patch: Partial<Pick<InstallTask, 'hidden' | 'background' | 'setup' | 'error' | 'notifiedPhase'>>) {
   const all = getInstallTasks();

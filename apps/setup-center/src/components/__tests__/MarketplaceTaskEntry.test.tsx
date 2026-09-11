@@ -14,14 +14,15 @@ it('clamps remembered positions into the resized visual viewport', () => {
   expect(dockPosition({ edge: 'right', ratio: 2 }, bounds, 180, 44)).toEqual({ x: 198, y: 306 });
   expect(dockPosition({ edge: 'left', ratio: -1 }, bounds, 180, 44)).toEqual({ x: 12, y: 86 });
 });
-it('opening uses a small entry while hiding it leaves the task actionable', () => {
+it('minimizing preserves an actionable entry without hiding the task', () => {
   const task = trackInstall('https://home.example', job, undefined, true);
   const open = vi.fn();
   render(<MarketplaceTaskEntry tasks={[task]} onOpen={open} />);
   fireEvent.click(screen.getByRole('button', { name: /View installations/ }));
   expect(open).toHaveBeenCalledOnce();
-  fireEvent.click(screen.getByRole('button', { name: /Hide floating/ }));
-  expect(getInstallTasks()[0].hidden).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: /Minimize floating/ }));
+  expect(getInstallTasks()[0].hidden).toBe(false);
+  expect(screen.getByRole('button', { name: /View installations/ })).toBeVisible();
   expect(taskPhase(getInstallTasks()[0])).toBe('installing');
 });
 it('completion retires the capsule, while pending permissions persist', () => {

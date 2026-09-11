@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { MarketplaceInstallProgress } from "./MarketplaceInstallProgress";
 import { MarketplaceTaskEntry, MarketplaceTaskList } from './MarketplaceTaskEntry';
 import { useInstallTaskMonitor } from '../marketplace/useInstallTaskMonitor';
-import { currentInstallTasks, getInstallTasks, isInstalling, INSTALL_TASK_OPEN, INSTALL_TASK_REFRESH, openInstallTask, patchInstall, taskKey, taskPhase, trackInstall, useInstallTasks, type InstallTask, type InstallJob, type PluginSetupState } from '../marketplace/installTasks';
+import { currentInstallTasks, getInstallTasks, isInstalling, INSTALL_TASK_OPEN, INSTALL_TASK_REFRESH, openInstallTask, patchInstall, removeFailedInstall, taskKey, taskPhase, trackInstall, useInstallTasks, type InstallTask, type InstallJob, type PluginSetupState } from '../marketplace/installTasks';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
@@ -130,6 +130,10 @@ export function MarketplaceInstallDialog({
         webRequest.current = { key, promise };
       }
       const prepared = await webRequest.current.promise;
+      if (pending.jobId && !known && prepared.status === 'failed') {
+        // A stale recovery pointer must not re-import a previous failed install.
+        dismissWebInstall(); setOpen(false); return;
+      }
       saveWebInstallJob(pending, prepared.id);
       if (mounted.current) saveJob(prepared, apiBaseUrl, undefined);
     } catch (error) {
@@ -325,9 +329,17 @@ export function MarketplaceInstallDialog({
     setJob(task.job);
     setLoading(false);
     setOpen(true);
-    patchInstall(task.key, { hidden: false });
     setErrorCode(task.base !== apiBaseUrl.replace(/\/+$/, '') ? 'marketplace_target_changed' : task.error || '');
     window.dispatchEvent(new Event(INSTALL_TASK_REFRESH));
+  }, [apiBaseUrl]);
+
+  const removeFailedTask = useCallback((task: InstallTask) => {
+    if (task.job.status !== 'failed') return;
+    removeFailedInstall(task.key);
+    if (task.mobile && pendingInstall()?.key === task.mobile.key) saveInstall({ ...task.mobile, dismissed: true });
+    if (!IS_TAURI && !IS_CAPACITOR) {
+      try { if (pendingWebInstall(apiBaseUrl)?.jobId === task.job.id) dismissWebInstall(); } catch { /* No matching recovery pointer. */ }
+    }
   }, [apiBaseUrl]);
 
   useEffect(() => {
@@ -384,6 +396,12 @@ export function MarketplaceInstallDialog({
     const nextWebInstall = () => { if (!IS_TAURI && !IS_CAPACITOR) dismissWebInstall(); };
     const current = job;
     setOpen(false);
+    if (current?.status === 'failed') {
+      removeFailedInstall(taskKey(selectedBase, current.id));
+      if (mobile.current && pendingInstall()?.key === mobile.current.key) saveInstall({ ...mobile.current, dismissed: true });
+      nextWebInstall();
+      return;
+    }
     if (current && current.status !== 'ready') {
       const task = getInstallTasks().find(task => task.key === taskKey(selectedBase, current.id));
       const done = task && ['complete', 'cancelled'].includes(taskPhase(task));
@@ -428,12 +446,7 @@ export function MarketplaceInstallDialog({
   if (job?.already_installed) completionKey = job.installed_pending_restart ? "alreadyInstalledPending" : "alreadyInstalled";
 
   return (<>
-    <MarketplaceTaskEntry tasks={currentTasks} onOpen={() => {
-      const unfinished = currentInstallTasks(tasks, apiBaseUrl);
-      const completed = [...currentTasks].filter(task => taskPhase(task) === 'complete').sort((a, b) => b.changedAt - a.changedAt)[0];
-      if (!unfinished.length && completed) selectTask(completed);
-      else setPanelOpen(true);
-    }} />
+    <MarketplaceTaskEntry tasks={currentInstallTasks(tasks, apiBaseUrl)} onOpen={() => setPanelOpen(true)} />
     <Dialog open={panelOpen} onOpenChange={setPanelOpen} modal={compactViewport}>
       <DialogContent overlayClassName="z-[1100]" className="install-task-panel z-[1100]" onCloseAutoFocus={event => event.preventDefault()}>
         <button className="install-task-handle" aria-label={t('marketplaceInstall.tasks.collapse')}
@@ -442,7 +455,7 @@ export function MarketplaceInstallDialog({
           onPointerUp={event => { if (event.clientY - Number(event.currentTarget.dataset.startY) > 40) setPanelOpen(false); }} />
         <DialogHeader><DialogTitle>{t('marketplaceInstall.tasks.title')}</DialogTitle>
           <DialogDescription>{t('marketplaceInstall.tasks.description')}</DialogDescription></DialogHeader>
-        <MarketplaceTaskList tasks={currentInstallTasks(tasks, apiBaseUrl)} onSelect={selectTask} />
+        <MarketplaceTaskList tasks={currentInstallTasks(tasks, apiBaseUrl)} onSelect={selectTask} onRemove={removeFailedTask} />
       </DialogContent>
     </Dialog>
     <Dialog open={open} onOpenChange={(next) => { if (!next) void close(); }}>
@@ -518,7 +531,7 @@ export function MarketplaceInstallDialog({
             } catch { setErrorCode('marketplace_account_required'); }
             finally { setActing(false); }
           }}>{t('marketplaceInstall.loginAccount')}</Button>}
-          {!loading && !acting && !pluginBusy && !(job?.status === "installed" && job.resource_type === "plugin") && <Button variant="outline" onClick={() => void close()}>{active ? t("marketplaceInstall.background") : job?.status === "installed" ? t("marketplaceInstall.pluginSetup.done") : job?.status === 'failed' ? t('marketplaceInstall.pluginSetup.later') : t("common.cancel")}</Button>}
+          {!loading && !acting && !pluginBusy && !(job?.status === "installed" && job.resource_type === "plugin") && <Button variant="outline" onClick={() => void close()}>{active ? t("marketplaceInstall.background") : job?.status === "installed" ? t("marketplaceInstall.pluginSetup.done") : job?.status === 'failed' ? t('marketplaceInstall.tasks.dismissFailure') : t("common.cancel")}</Button>}
           {job?.status === 'failed' && selectedBase === apiBaseUrl.replace(/\/+$/, '') && <Button onClick={async () => {
             await close();
             try { await openMarketplaceWithAccount(desktopVersion, apiBaseUrl); }

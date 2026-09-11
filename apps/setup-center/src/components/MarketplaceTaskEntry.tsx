@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, CheckCircle2, ChevronRight, Loader2, PackageCheck, ShieldCheck, X } from 'lucide-react';
-import { toast } from 'sonner';
-import { needsInstallAttention, openInstallTask, patchInstall, taskPhase, type InstallTask } from '../marketplace/installTasks';
+import { AlertCircle, CheckCircle2, ChevronRight, Loader2, Minus, PackageCheck, ShieldCheck, X } from 'lucide-react';
+import { needsInstallAttention, openInstallTask, removeFailedInstall, taskPhase, type InstallTask } from '../marketplace/installTasks';
 import { MarketplaceInstallProgress } from './MarketplaceInstallProgress';
 import './MarketplaceTaskEntry.css';
 
@@ -33,8 +32,8 @@ function StatusIcon({ phase }: { phase: string }) {
 }
 
 /** Only the current working set is passed in; reading never resolves setup. */
-export function MarketplaceTaskList({ tasks, onSelect = task => openInstallTask(task.key) }: {
-  tasks: InstallTask[]; onSelect?: (task: InstallTask) => void;
+export function MarketplaceTaskList({ tasks, onSelect = task => openInstallTask(task.key), onRemove = task => removeFailedInstall(task.key) }: {
+  tasks: InstallTask[]; onSelect?: (task: InstallTask) => void; onRemove?: (task: InstallTask) => void;
 }) {
   const { t } = useTranslation();
   const ordered = [...tasks].sort((a, b) => Number(taskPhase(b) === 'installing') - Number(taskPhase(a) === 'installing') ||
@@ -53,6 +52,9 @@ export function MarketplaceTaskList({ tasks, onSelect = task => openInstallTask(
           </span>
           <span className="install-task-action">{t(phase === 'permissions' ? 'marketplaceInstall.tasks.reviewPermissions' : 'marketplaceInstall.tasks.details')}<ChevronRight size={14} /></span>
         </button>
+        {task.job.status === 'failed' && <button type="button" className="install-task-remove"
+          aria-label={t('marketplaceInstall.tasks.removeNamed', { name: task.job.resource_name })}
+          onClick={() => onRemove(task)}><X size={14} />{t('marketplaceInstall.tasks.remove')}</button>}
         {phase === 'installing' && <div className="install-task-progress"><MarketplaceInstallProgress job={task.job} /></div>}
       </div>;
     })}
@@ -69,14 +71,14 @@ export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; 
   const [dragging, setDragging] = useState(false);
   const [snapping, setSnapping] = useState(false);
   const [blocked, setBlocked] = useState(false);
-  const [now, setNow] = useState(Date.now());
-  const visible = tasks.filter(task => task.background && !task.hidden && taskPhase(task) !== 'cancelled' &&
-    (taskPhase(task) !== 'complete' || now - task.changedAt < 4500));
-  const priority = ['permissions', 'setup', 'failed', 'paused', 'installing', 'checking', 'complete', 'ready'];
+  const [minimized, setMinimized] = useState(false);
+  const visible = tasks.filter(task => !['complete', 'cancelled'].includes(taskPhase(task)));
+  const priority = ['installing', 'checking', 'permissions', 'setup', 'failed', 'paused', 'ready'];
   const main = [...visible].sort((a, b) => priority.indexOf(taskPhase(a)) - priority.indexOf(taskPhase(b)))[0];
   const phase = main ? taskPhase(main) : '';
-  const count = visible.filter(task => taskPhase(task) === phase).length;
-  const fading = tasks.some(task => task.background && !task.hidden && taskPhase(task) === 'complete' && now - task.changedAt < 4500);
+  const count = visible.length;
+  const label = visible.every(task => taskPhase(task) === phase)
+    ? t(`marketplaceInstall.tasks.${phase}`) : t('marketplaceInstall.tasks.title');
   const bounds = (): Bounds => {
     const viewport = window.visualViewport;
     return { left: viewport?.offsetLeft || 0, top: viewport?.offsetTop || 0,
@@ -89,11 +91,6 @@ export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; 
     const preferred = dock.current || { edge: 'right', ratio: Math.max(0, (area.height - 240) / Math.max(1, area.height - 120)) };
     setPosition(dockPosition(preferred, area, width, height));
   };
-  useEffect(() => {
-    if (!fading) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [fading]);
   useEffect(() => {
     const check = () => setBlocked(!!document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"], .sidebarOpen'));
     check();
@@ -111,11 +108,11 @@ export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; 
       window.visualViewport?.removeEventListener('resize', place);
       window.visualViewport?.removeEventListener('scroll', place);
     };
-  }, [phase, count, blocked]);
+  }, [phase, count, blocked, minimized]);
   if (!main || blocked) return null;
-  return createPortal(<div ref={ref} className="install-task-capsule" data-phase={phase} data-dragging={dragging} data-snapping={snapping}
+  return createPortal(<div ref={ref} className="install-task-capsule" data-phase={phase} data-minimized={minimized} data-dragging={dragging} data-snapping={snapping}
     style={{ left: position.x, top: position.y }}>
-    <button type="button" className="install-task-grip" aria-label={t('marketplaceInstall.tasks.open', { status: t(`marketplaceInstall.tasks.${phase}`), count })}
+    <button type="button" className="install-task-grip" aria-label={t('marketplaceInstall.tasks.open', { status: label, count })}
       title={t('marketplaceInstall.tasks.dragHint')}
       onPointerDown={event => {
         if (event.button !== 0 || !event.isPrimary) return;
@@ -150,14 +147,11 @@ export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; 
       onPointerCancel={() => { suppressClick.current = true; drag.current = undefined; setDragging(false); place(); }}
       onClick={event => {
         if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; }
-        onOpen();
+        setMinimized(false); onOpen();
       }}>
-      <StatusIcon phase={phase} /><span>{t(`marketplaceInstall.tasks.${phase}`)}</span><span className="install-task-count">{count}</span>
+      <StatusIcon phase={phase} />{!minimized && <span>{label}</span>}<span className="install-task-count">{count}</span>
     </button>
-    <button type="button" className="install-task-hide" aria-label={t('marketplaceInstall.tasks.hide')} title={t('marketplaceInstall.tasks.hide')}
-      onClick={() => {
-        visible.forEach(task => patchInstall(task.key, { hidden: true }));
-        toast(t('marketplaceInstall.tasks.hiddenHint'), { action: { label: t('marketplaceInstall.tasks.details'), onClick: () => openInstallTask() } });
-      }}><X size={14} /></button>
+    {!minimized && <button type="button" className="install-task-hide" aria-label={t('marketplaceInstall.tasks.minimize')} title={t('marketplaceInstall.tasks.minimize')}
+      onClick={() => setMinimized(true)}><Minus size={14} /></button>}
   </div>, document.body);
 }

@@ -133,6 +133,17 @@ confirmation, background completion/permission recovery and an expired link.
 
 ## App task recovery
 
+The floating installation entry and its list use the same working set and total
+count. Running installations sort first; mixed states use a neutral installation
+label. The entry can minimize without hiding access to tasks. There is no
+installation shortcut in the account/application menu.
+
+Failure notices remain only in the current page session. Upgrading the task store
+drops historical failures, and reloads retain live work and pending plugin setup.
+Failed rows can be removed; closing a failed detail dialog also removes its
+notice and clears the matching recovery pointer. Removal does not delete plugin
+files or server logs, and discovery never re-imports completed failed jobs.
+
 The app persists the target and returned job ID. A response lost during preparation
 can be retried with the same instruction. After preparation, subsequent operations
 use the saved job ID instead of consuming the ticket again. Closing the progress view lets the

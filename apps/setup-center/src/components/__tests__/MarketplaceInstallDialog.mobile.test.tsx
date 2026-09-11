@@ -104,8 +104,8 @@ it('continues polling after backgrounding, retains pending permissions when hidd
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(calls.some(url => url.endsWith('/installs/job'))).toBe(true);
   await screen.findByRole('button', { name: /View installations: Needs permission/ });
-  fireEvent.click(screen.getByRole('button', { name: i18n.t('marketplaceInstall.tasks.hide') }));
-  expect(getInstallTasks()[0].hidden).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: i18n.t('marketplaceInstall.tasks.minimize') }));
+  expect(getInstallTasks()[0].hidden).toBe(false);
   expect(taskPhase(getInstallTasks()[0])).toBe('permissions');
   fireEvent.click(screen.getByRole('button', { name: 'Resume installation' }));
   fireEvent.click(await screen.findByRole('button', { name: /Test Skill.*Needs permission.*Review permissions/ }));
