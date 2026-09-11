@@ -6,14 +6,14 @@ const token = 'a'.repeat(64);
 beforeEach(() => { sessionStorage.clear(); history.replaceState(null, '', '/proxy/web?local=value#plugins'); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 function returnFromMarket(state: string, overrides: Record<string, string> = {}) {
-  history.replaceState(null, '', '/proxy/web#' + new URLSearchParams({ 'openakita-install': token, state, endpoint, ...overrides }));
+  history.replaceState(null, '', '/proxy/web/marketplace-return#' + new URLSearchParams({ 'openakita-install': token, state, endpoint, ...overrides }));
   captureWebInstallReturn();
 }
 it('keeps credentials and the original route local, accepts the bound return and persists it across reads', () => {
   localStorage.setItem('openakita_access_token', 'secret');
   const url = new URL(buildWebMarketplaceUrl('1.27.40', location.origin));
   expect(url.searchParams.get('client')).toBe('web');
-  expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web');
+  expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web/marketplace-return');
   expect(url.href).not.toMatch(/secret|local=value|plugins/);
   returnFromMarket(url.searchParams.get('state')!);
   expect(location.hash).toBe('#plugins');
@@ -75,7 +75,7 @@ it('gives desktop market tabs independent return contexts and detaches the opene
     const url = new URL(tabs[index].location.replace.mock.calls[0][0]);
     expect(contexts[index].base).toBe(location.origin);
     expect(contexts[index].state).toBe(url.searchParams.get('state'));
-    expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web');
+    expect(url.searchParams.get('return_url')).toBe(location.origin + '/proxy/web/marketplace-return');
   }
   // Opening new tabs must not overwrite a pending installation in the original.
   returnFromMarket(parent.searchParams.get('state')!);

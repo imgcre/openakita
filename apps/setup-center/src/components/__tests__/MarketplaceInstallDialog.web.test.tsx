@@ -16,7 +16,7 @@ beforeEach(async () => {
   await i18n.changeLanguage('en');
   history.replaceState(null, '', '/web');
   const url = new URL(buildWebMarketplaceUrl('1.27.40', location.origin));
-  history.replaceState(null, '', '/web#' + new URLSearchParams({ 'openakita-install': 'a'.repeat(64),
+  history.replaceState(null, '', '/web/marketplace-return#' + new URLSearchParams({ 'openakita-install': 'a'.repeat(64),
     state: url.searchParams.get('state')!, endpoint: url.origin }));
   captureWebInstallReturn();
 });

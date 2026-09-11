@@ -9,6 +9,7 @@ export type WebInstallContext = {
   state: string; base: string; endpoint: string; returnUrl: string; expires: number;
   token?: string; jobId?: string; consumed?: boolean;
   relay?: boolean; delivered?: boolean;
+  callbackUrl?: string;
 };
 function read(): WebInstallContext | null {
   try { return JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch { return null; }
@@ -26,9 +27,14 @@ export function buildWebMarketplaceUrl(version: string, base: string, next = '/'
   // getRandomValues also works on LAN HTTP, where randomUUID is unavailable.
   const state = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
   const url = new URL(buildMarketplaceContextUrl(version, next, origin));
-  write({ state, base: baseUrl(base), endpoint: url.origin, returnUrl: page.href, expires: Date.now() + TTL }, storage);
-  storage.removeItem(ERROR_KEY);
+  const originalUrl = page.href;
   page.search = ''; page.hash = '';
+  // A distinct, uncached shell avoids reusing an older cached /web/ document
+  // when the market returns, even after the source tab was force-refreshed.
+  page.pathname = page.pathname.replace(/\/+$/, '') + '/marketplace-return';
+  write({ state, base: baseUrl(base), endpoint: url.origin, returnUrl: originalUrl,
+    callbackUrl: page.href, expires: Date.now() + TTL }, storage);
+  storage.removeItem(ERROR_KEY);
   url.searchParams.set('client', 'web');
   url.searchParams.set('state', state);
   url.searchParams.set('return_url', page.href);
@@ -74,7 +80,8 @@ export function captureWebInstallReturn() {
   try {
     if (!context || context.expires <= Date.now()) throw new Error('marketplace_context_expired');
     const page = new URL(context.returnUrl);
-    if (page.origin !== location.origin || page.pathname !== location.pathname || context.consumed ||
+    const callback = new URL(context.callbackUrl || context.returnUrl);
+    if (page.origin !== location.origin || callback.origin !== location.origin || callback.pathname !== location.pathname || context.consumed ||
       params.getAll('state').length !== 1 || params.get('state') !== context.state ||
       params.getAll('openakita-install').length !== 1 || !/^[a-f0-9]{64}$/.test(params.get('openakita-install') || '') ||
       params.getAll('endpoint').length !== 1 || params.get('endpoint') !== context.endpoint) {

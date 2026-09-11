@@ -103,9 +103,17 @@ exemptions access to native desktop credentials. Expired, unrelated or replayed
 returns require reopening Marketplace from OpenAkita. Entering Marketplace from
 a desktop client clears a previous Web/App context in that browser tab.
 
-Deploy the Marketplace web changes together with the rebuilt OpenAkita Web
-assets. No additional Account protocol, backend change or APK is required for
-this Web flow. Verify an HTTP LAN address and HTTPS reverse proxy, refresh before
+Web returns use the dedicated `/web/marketplace-return` shell. The backend serves
+this shell, the normal Web entry and the service worker with `Cache-Control:
+no-store`, so a return navigation cannot reuse an older cached entry document.
+The original page path, query and fragment are restored locally after capture.
+Hashed static assets retain their normal caching behavior. Reverse proxies must
+forward this callback path to OpenAkita and honor the entry's cache policy.
+
+Ship the updated OpenAkita backend together with the rebuilt Web assets and
+restart the backend to enable this entry. The existing Marketplace accepts this
+callback path; this handoff fix requires no Marketplace, Account or APK update.
+Verify an HTTP LAN address and HTTPS reverse proxy, refresh before
 confirmation, background completion/permission recovery and an expired link.
 
 ## App task recovery
