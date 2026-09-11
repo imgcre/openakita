@@ -1,6 +1,6 @@
 .install-task-capsule {
   position: fixed; z-index: 40; display: flex; align-items: center;
-  max-width: calc(100vw - 24px); border: 1px solid var(--line);
+  width: max-content; max-width: calc(100vw - 24px); border: 1px solid var(--line);
   border-radius: 999px; background: var(--panel, #fff); color: var(--text, #222);
   box-shadow: 0 4px 18px rgb(0 0 0 / 12%); overflow: hidden;
 }
@@ -10,7 +10,9 @@
   border: 0; background: transparent; color: inherit; display: flex; align-items: center;
   justify-content: center; min-height: 44px; padding: 0; cursor: pointer;
 }
-.install-task-grip { gap: 8px; padding: 0 4px 0 14px; touch-action: none; user-select: none; font-size: 13px; font-weight: 500; }
+.install-task-grip { flex: 1; min-width: 0; gap: 8px; padding: 0 4px 0 14px; touch-action: none; user-select: none; font-size: 13px; font-weight: 500; white-space: nowrap; }
+.install-task-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.install-task-grip > svg, .install-task-count, .install-task-hide { flex-shrink: 0; }
 .install-task-grip:active { cursor: grabbing; }
 .install-task-capsule[data-minimized="true"] .install-task-grip { padding: 0 10px; }
 .install-task-remove { display: flex; align-items: center; gap: 4px; margin: 0 0 12px 34px; padding: 4px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }

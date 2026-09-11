@@ -149,7 +149,7 @@ export function MarketplaceTaskEntry({ tasks, onOpen }: { tasks: InstallTask[]; 
         if (suppressClick.current && event.detail !== 0) { suppressClick.current = false; return; }
         setMinimized(false); onOpen();
       }}>
-      <StatusIcon phase={phase} />{!minimized && <span>{label}</span>}<span className="install-task-count">{count}</span>
+      <StatusIcon phase={phase} />{!minimized && <span className="install-task-label">{label}</span>}<span className="install-task-count">{count}</span>
     </button>
     {!minimized && <button type="button" className="install-task-hide" aria-label={t('marketplaceInstall.tasks.minimize')} title={t('marketplaceInstall.tasks.minimize')}
       onClick={() => setMinimized(true)}><Minus size={14} /></button>}
